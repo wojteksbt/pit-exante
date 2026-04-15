@@ -772,9 +772,17 @@ def _aggregate_by_year(
         report.dividends_tax_paid_pln = sum(
             e.tax_withheld_pln for e in year_div_events
         )
+        # KROK 4: per-record quantize then sum (groszowa precyzja).
+        # Per-dywidenda: gross_amount_pln × 19% → quantize(0.01); reduces
+        # cumulative rounding error vs single sum-then-quantize. Aligns with
+        # XTB/mBank convention and per-row PIT-8C structure.
         report.dividends_tax_due_pln = max(
             Decimal("0"),
-            (report.dividends_income_pln * TAX_RATE).quantize(Decimal("1"), rounding=ROUND_HALF_UP),
+            sum(
+                ((e.gross_amount_pln * TAX_RATE).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                 for e in year_div_events),
+                Decimal("0"),
+            ),
         )
         report.dividends_tax_to_pay_pln = max(
             Decimal("0"),
