@@ -4,8 +4,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from enum import Enum
+
+ZERO = Decimal("0")
+TAX_RATE = Decimal("0.19")
+BARE_CURRENCIES = frozenset({"USD", "EUR", "CAD", "SEK", "PLN"})
+
+_Q2 = Decimal("0.01")
+
+
+def to_pln(amount: Decimal, rate: Decimal) -> Decimal:
+    """Convert to PLN and round to grosze (Exante per-component rounding)."""
+    return (amount * rate).quantize(_Q2, rounding=ROUND_HALF_UP)
 
 
 class TaxCategory(Enum):
@@ -87,6 +98,7 @@ class DividendEvent:
     currency: str
     nbp_rate: Decimal
     comment: str
+    country: str = ""
 
 
 @dataclass

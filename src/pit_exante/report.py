@@ -7,7 +7,7 @@ import io
 from decimal import Decimal
 from pathlib import Path
 
-from .models import DividendEvent, FifoLot, TaxEvent, YearReport
+from .models import TAX_RATE, DividendEvent, FifoLot, TaxEvent, YearReport
 
 
 def _fmt(amount: Decimal, width: int = 12) -> str:
@@ -88,27 +88,46 @@ def generate_year_report(report: YearReport) -> str:
     lines.append("")
 
     if report.dividend_events:
-        lines.append("Szczegóły dywidend:")
-        lines.append("─" * 110)
-        lines.append(
-            f"{'Data':<12}{'Instrument':<16}{'Brutto':>10} {'Wal':>4}"
-            f"{'Brutto PLN':>14}{'Podatek źródło':>16}{'Podatek PL 19%':>16}{'Do zapłaty':>14}"
-        )
-        lines.append("─" * 110)
+        # Group dividends by country for PIT/ZG
+        country_names = {"US": "USA", "CA": "Kanada", "SE": "Szwecja"}
+        by_country: dict[str, list[DividendEvent]] = {}
+        for e in report.dividend_events:
+            by_country.setdefault(e.country or "??", []).append(e)
 
-        for e in sorted(report.dividend_events, key=lambda x: x.date):
-            tax_pl = max(Decimal("0"), (e.gross_amount_pln * Decimal("0.19")).quantize(Decimal("0.01")))
-            to_pay = max(Decimal("0"), tax_pl - e.tax_withheld_pln)
+        for country_code in sorted(by_country):
+            events = by_country[country_code]
+            country_name = country_names.get(country_code, country_code)
+
+            c_gross = sum(e.gross_amount_pln for e in events)
+            c_tax_paid = sum(e.tax_withheld_pln for e in events)
+            c_tax_due = max(Decimal("0"), (c_gross * TAX_RATE).quantize(Decimal("0.01")))
+            c_to_pay = max(Decimal("0"), c_tax_due - c_tax_paid)
+
+            lines.append(f"Kraj: {country_name} ({country_code})")
+            lines.append(f"  Brutto: {_fmt(c_gross)} PLN | Podatek źródło: {_fmt(c_tax_paid)} PLN | "
+                         f"Podatek PL 19%: {_fmt(c_tax_due)} PLN | Do zapłaty: {_fmt(c_to_pay)} PLN")
+            lines.append("")
+            lines.append("─" * 110)
             lines.append(
-                f"{e.date.isoformat():<12}{e.symbol:<16}"
-                f"{e.gross_amount:>10.2f} {e.currency:>4}"
-                f"{_fmt(e.gross_amount_pln, 14)}"
-                f"{_fmt(e.tax_withheld_pln, 16)}"
-                f"{_fmt(tax_pl, 16)}"
-                f"{_fmt(to_pay, 14)}"
+                f"{'Data':<12}{'Instrument':<16}{'Brutto':>10} {'Wal':>4}"
+                f"{'Brutto PLN':>14}{'Podatek źródło':>16}{'Podatek PL 19%':>16}{'Do zapłaty':>14}"
             )
+            lines.append("─" * 110)
 
-        lines.append("─" * 110)
+            for e in sorted(events, key=lambda x: x.date):
+                tax_pl = max(Decimal("0"), (e.gross_amount_pln * TAX_RATE).quantize(Decimal("0.01")))
+                to_pay = max(Decimal("0"), tax_pl - e.tax_withheld_pln)
+                lines.append(
+                    f"{e.date.isoformat():<12}{e.symbol:<16}"
+                    f"{e.gross_amount:>10.2f} {e.currency:>4}"
+                    f"{_fmt(e.gross_amount_pln, 14)}"
+                    f"{_fmt(e.tax_withheld_pln, 16)}"
+                    f"{_fmt(tax_pl, 16)}"
+                    f"{_fmt(to_pay, 14)}"
+                )
+
+            lines.append("─" * 110)
+            lines.append("")
     lines.append("")
 
     return "\n".join(lines)

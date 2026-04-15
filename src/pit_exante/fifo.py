@@ -7,7 +7,10 @@ from collections import defaultdict, deque
 from datetime import date
 from decimal import Decimal
 
-from .models import FifoLot, TaxEvent
+from .models import FifoLot, TaxEvent, to_pln
+
+# Keep _pln as alias for backward compatibility with tests
+_pln = to_pln
 
 
 class FifoEngine:
@@ -26,11 +29,11 @@ class FifoEngine:
 
     def has_long_position(self, account_id: str, symbol: str) -> bool:
         key = self._key(account_id, symbol)
-        return bool(self._queues[key])
+        return bool(self._queues.get(key))
 
     def has_short_position(self, account_id: str, symbol: str) -> bool:
         key = self._key(account_id, symbol)
-        return bool(self._short_queues[key])
+        return bool(self._short_queues.get(key))
 
     def buy(
         self,
@@ -80,18 +83,15 @@ class FifoEngine:
 
         while remaining > 0 and queue:
             lot = queue[0]
+            qty_used = min(lot.quantity, remaining)
+            # Round each component to grosze separately (Exante convention)
+            cost_pln += to_pln(qty_used * lot.price_per_unit, lot.nbp_rate) + to_pln(qty_used * lot.commission_per_unit, lot.nbp_rate)
+            cost_original += qty_used * (lot.price_per_unit + lot.commission_per_unit)
+            consumed_lots.append(f"{lot.date}:{qty_used}@{lot.price_per_unit}")
             if lot.quantity <= remaining:
-                # Consume entire lot
-                cost_pln += lot.quantity * (lot.price_per_unit + lot.commission_per_unit) * lot.nbp_rate
-                cost_original += lot.quantity * (lot.price_per_unit + lot.commission_per_unit)
-                consumed_lots.append(f"{lot.date}:{lot.quantity}@{lot.price_per_unit}")
                 remaining -= lot.quantity
                 queue.popleft()
             else:
-                # Partial consumption
-                cost_pln += remaining * (lot.price_per_unit + lot.commission_per_unit) * lot.nbp_rate
-                cost_original += remaining * (lot.price_per_unit + lot.commission_per_unit)
-                consumed_lots.append(f"{lot.date}:{remaining}@{lot.price_per_unit}")
                 lot.quantity -= remaining
                 remaining = Decimal("0")
 
@@ -104,11 +104,10 @@ class FifoEngine:
         # Sell income
         sell_qty = abs(quantity)
         income_original = sell_qty * sell_price
-        income_pln = income_original * nbp_rate_sell
+        income_pln = to_pln(income_original, nbp_rate_sell)
 
         # Add sell commission to cost
-        sell_commission_pln = abs(sell_commission) * nbp_rate_sell
-        cost_pln += sell_commission_pln
+        cost_pln += to_pln(abs(sell_commission), nbp_rate_sell)
         cost_original += abs(sell_commission)
 
         return TaxEvent(
@@ -174,16 +173,14 @@ class FifoEngine:
 
         while remaining > 0 and queue:
             lot = queue[0]
+            qty_used = min(lot.quantity, remaining)
+            income_pln += to_pln(qty_used * lot.price_per_unit, lot.nbp_rate)
+            income_original += qty_used * lot.price_per_unit
+            consumed_lots.append(f"{lot.date}:{qty_used}@{lot.price_per_unit}")
             if lot.quantity <= remaining:
-                income_pln += lot.quantity * lot.price_per_unit * lot.nbp_rate
-                income_original += lot.quantity * lot.price_per_unit
-                consumed_lots.append(f"{lot.date}:{lot.quantity}@{lot.price_per_unit}")
                 remaining -= lot.quantity
                 queue.popleft()
             else:
-                income_pln += remaining * lot.price_per_unit * lot.nbp_rate
-                income_original += remaining * lot.price_per_unit
-                consumed_lots.append(f"{lot.date}:{remaining}@{lot.price_per_unit}")
                 lot.quantity -= remaining
                 remaining = Decimal("0")
 
@@ -195,7 +192,7 @@ class FifoEngine:
 
         buy_qty = abs(quantity)
         cost_original = buy_qty * buy_price + abs(commission)
-        cost_pln = buy_qty * buy_price * nbp_rate_buy + abs(commission) * nbp_rate_buy
+        cost_pln = to_pln(buy_qty * buy_price, nbp_rate_buy) + to_pln(abs(commission), nbp_rate_buy)
 
         return TaxEvent(
             date=buy_date,
@@ -259,13 +256,11 @@ class FifoEngine:
         while consumed < old_quantity and queue:
             lot = queue.popleft()
             old_lots.append(lot)
-            total_cost_pln += lot.quantity * (lot.price_per_unit + lot.commission_per_unit) * lot.nbp_rate
+            total_cost_pln += to_pln(lot.quantity * lot.price_per_unit, lot.nbp_rate) + to_pln(lot.quantity * lot.commission_per_unit, lot.nbp_rate)
             total_cost_original += lot.quantity * (lot.price_per_unit + lot.commission_per_unit)
             consumed += lot.quantity
 
         events: list[TaxEvent] = []
-
-        fraction_for_new_shares = new_quantity / old_quantity
 
         # Average NBP rate from old lots
         if old_lots:
@@ -275,29 +270,22 @@ class FifoEngine:
         else:
             weighted_rate = nbp_rate
 
+        # Exante assigns 100% of original cost to the new whole shares.
+        # Fractional cash payment is treated as pure income with zero cost basis.
+        # Total P&L across years is identical — only timing differs.
         new_lot = FifoLot(
             date=old_lots[0].date if old_lots else reverse_date,
             quantity=new_quantity,
             price_per_unit=total_cost_original / new_quantity,
             currency=currency,
-            commission_per_unit=Decimal("0"),  # commission already baked into price
+            commission_per_unit=Decimal("0"),
             nbp_rate=weighted_rate,
         )
         queue.append(new_lot)
 
-        # Fractional cash payment = taxable event
+        # Fractional cash payment = taxable event (zero cost per Exante convention)
         if fractional_cash and fractional_cash > 0:
-            # Fractional shares = old_quantity - (new_quantity * old_quantity/new_quantity)
-            # Actually: the cash represents the fraction that didn't make a whole share
-            fractional_shares = old_quantity - new_quantity * (old_quantity / new_quantity)
-            # Simpler: cost proportional to cash vs total value
-            fractional_cost_pln = total_cost_pln * (Decimal("1") - fraction_for_new_shares)
-            fractional_cost_original = total_cost_original * (Decimal("1") - fraction_for_new_shares)
-
-            # Actually, for REMX 1:3: 5 shares → 1 whole + 0.67 fractional
-            # Fractional cost = (0.67/5) * total_cost = cost of 0.67 shares
-            # But simpler: cash / total_value * total_cost
-            fractional_income_pln = fractional_cash * nbp_rate
+            fractional_income_pln = to_pln(fractional_cash, nbp_rate)
 
             events.append(TaxEvent(
                 date=reverse_date,
@@ -305,9 +293,9 @@ class FifoEngine:
                 account_id=account_id,
                 event_type="fractional_cash",
                 income_original=fractional_cash,
-                cost_original=fractional_cost_original,
+                cost_original=Decimal("0"),
                 income_pln=fractional_income_pln,
-                cost_pln=fractional_cost_pln,
+                cost_pln=Decimal("0"),
                 currency=currency,
                 nbp_rate=nbp_rate,
                 details=f"Reverse split {symbol} fractional share payment: {fractional_cash} {currency}",

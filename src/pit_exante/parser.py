@@ -7,7 +7,7 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-from .models import Transaction
+from .models import BARE_CURRENCIES, Transaction
 
 # Exchange suffixes → settlement currency
 _EXCHANGE_CURRENCY: dict[str, str] = {
@@ -19,12 +19,10 @@ _EXCHANGE_CURRENCY: dict[str, str] = {
     ".SOMX": "SEK",
 }
 
-_BARE_CURRENCIES = {"USD", "EUR", "CAD", "SEK", "PLN"}
-
 
 def _derive_currency(asset: str, symbol_id: str | None) -> str:
     """Derive settlement currency from asset string."""
-    if asset in _BARE_CURRENCIES:
+    if asset in BARE_CURRENCIES:
         return asset
 
     # Forex: EUR/USD.E.FX → settlement in USD
@@ -98,4 +96,4 @@ def is_instrument_trade(t: Transaction) -> bool:
     """
     if t.operation_type != "TRADE":
         return False
-    return t.transaction_price is not None and t.asset not in _BARE_CURRENCIES
+    return t.transaction_price is not None and t.asset not in BARE_CURRENCIES
