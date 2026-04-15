@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
@@ -15,14 +17,62 @@ from .models import (
     BARE_CURRENCIES,
     TAX_RATE,
     DividendEvent,
+    InstrumentKind,
     TaxCategory,
     TaxEvent,
     Transaction,
+    UnknownInstrumentError,
     YearReport,
     to_pln,
 )
 from .nbp import get_rate, save_cache_if_dirty
 from .parser import is_instrument_trade, parse_transactions
+from .symbol_metadata import classify as classify_kind
+
+logger = logging.getLogger(__name__)
+
+
+def _load_kind_lookup(transactions_path: Path) -> tuple[dict, dict]:
+    """Load symbols.json + symbol_overrides.json relative to the project root.
+
+    Falls back to empty dicts if files don't exist (test fixtures or stale data) —
+    classify_event_kind handles missing entries by raising UnknownInstrumentError
+    only for symbols that actually need classification.
+    """
+    project_root = Path(transactions_path).parent.parent
+    symbols_path = project_root / "data" / "symbols.json"
+    overrides_path = project_root / "config" / "symbol_overrides.json"
+
+    symbols: dict = {}
+    if symbols_path.exists():
+        symbols = json.loads(symbols_path.read_text())
+
+    overrides: dict = {}
+    if overrides_path.exists():
+        raw = json.loads(overrides_path.read_text())
+        overrides = {k: v for k, v in raw.items() if not k.startswith("_")}
+
+    return symbols, overrides
+
+
+def _classify_event_kind(
+    event: TaxEvent,
+    symbols: dict,
+    overrides: dict,
+) -> InstrumentKind:
+    """Determine InstrumentKind for a TaxEvent.
+
+    Rules (in order):
+    - rollover_cost / rollover_income → DERIVATIVE (CFD overnight swap)
+    - event_type == "fee" → SECURITY (broker commission, includes .FX fees
+      and generic FEE entries — all reduce papiery wartościowe income)
+    - otherwise (sell, fractional_cash, dividend) → classify by symbolType
+    """
+    if event.event_type in ("rollover_cost", "rollover_income"):
+        return InstrumentKind.DERIVATIVE
+    if event.event_type == "fee":
+        return InstrumentKind.SECURITY
+    return classify_kind(event.symbol, symbols, overrides)
 
 
 def _normalize_account(account_id: str) -> str:
@@ -633,6 +683,28 @@ def calculate(transactions_path: str | Path) -> tuple[list[YearReport], dict]:
     # Persist NBP cache after all rate lookups
     save_cache_if_dirty()
 
+    # KROK 3: classify each tax event by InstrumentKind (SECURITY / DERIVATIVE)
+    symbols, overrides = _load_kind_lookup(Path(transactions_path))
+    for event in tax_events:
+        event.kind = _classify_event_kind(event, symbols, overrides)
+
+    # KROK 3 (P5 defensive): warn if a CFD pays dividend (not in current data,
+    # but Exante may emit synthetic dividend adjustments on some CFDs — those
+    # should be classified as DERIVATIVE income, not as PIT-38 sekcja G dividend).
+    for div in dividend_events:
+        try:
+            kind = classify_kind(div.symbol, symbols, overrides)
+        except UnknownInstrumentError:
+            continue
+        if kind == InstrumentKind.DERIVATIVE:
+            logger.warning(
+                "Dividend on CFD/derivative %s on %s not yet supported, "
+                "treating as regular foreign dividend (PIT-38 sekcja G). "
+                "Verify with tax advisor whether this should be income from "
+                "derivative instruments instead (PIT-38 sekcja C wiersz 3).",
+                div.symbol, div.date,
+            )
+
     # Aggregate by year
     reports = _aggregate_by_year(tax_events, dividend_events)
     positions = fifo.get_positions()
@@ -657,16 +729,33 @@ def _aggregate_by_year(
     for year in all_years:
         report = YearReport(year=year)
 
-        # PIT-38 events
-        year_tax_events = tax_by_year.get(year, [])
+        # PIT-38 events — sorted chronologically (deterministic order)
+        year_tax_events = sorted(tax_by_year.get(year, []), key=lambda e: e.date)
         report.pit38_events = year_tax_events
 
-        report.pit38_income = sum(
-            e.income_pln for e in year_tax_events
+        # KROK 3: split events by InstrumentKind for PIT-38 wiersz 1 vs wiersz 3
+        report.papiery_wart_events = [
+            e for e in year_tax_events if e.kind == InstrumentKind.SECURITY
+        ]
+        report.pochodne_events = [
+            e for e in year_tax_events if e.kind == InstrumentKind.DERIVATIVE
+        ]
+
+        report.papiery_wart_income = sum(
+            (e.income_pln for e in report.papiery_wart_events), Decimal("0")
         )
-        report.pit38_cost = sum(
-            e.cost_pln for e in year_tax_events
+        report.papiery_wart_cost = sum(
+            (e.cost_pln for e in report.papiery_wart_events), Decimal("0")
         )
+        report.pochodne_income = sum(
+            (e.income_pln for e in report.pochodne_events), Decimal("0")
+        )
+        report.pochodne_cost = sum(
+            (e.cost_pln for e in report.pochodne_events), Decimal("0")
+        )
+
+        report.pit38_income = report.papiery_wart_income + report.pochodne_income
+        report.pit38_cost = report.papiery_wart_cost + report.pochodne_cost
         report.pit38_profit_loss = report.pit38_income - report.pit38_cost
         report.pit38_tax = max(
             Decimal("0"),
