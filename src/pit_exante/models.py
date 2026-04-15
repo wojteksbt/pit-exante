@@ -33,6 +33,34 @@ class TaxCategory(Enum):
     SKIP = "skip"
 
 
+class InstrumentKind(Enum):
+    """Tax classification per art. 30b ustawy o PIT.
+
+    Maps to PIT-8C positions and PIT-38 rows:
+    - SECURITY: PIT-8C poz. 23-24, PIT-38 wiersz 1 (akcje, ETF, obligacje, fundusze)
+    - DERIVATIVE: PIT-8C poz. 27-28, PIT-38 wiersz 3 (CFD, futures, opcje)
+    """
+
+    SECURITY = "security"
+    DERIVATIVE = "derivative"
+
+
+class UnknownInstrumentError(KeyError):
+    """Raised when symbolId is not in metadata (data/symbols.json) nor overrides."""
+
+
+class UnknownTypeError(ValueError):
+    """Raised when symbolType is not in EXANTE_TYPE_TO_KIND mapping."""
+
+    def __init__(self, symbol_type: str, symbol_id: str):
+        super().__init__(
+            f"Unknown symbolType {symbol_type!r} for symbol {symbol_id!r}. "
+            f"Add to EXANTE_TYPE_TO_KIND in symbol_metadata.py."
+        )
+        self.symbol_type = symbol_type
+        self.symbol_id = symbol_id
+
+
 @dataclass
 class Transaction:
     uuid: str
