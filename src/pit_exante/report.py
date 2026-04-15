@@ -20,65 +20,112 @@ def _fmt_orig(amount: Decimal, currency: str, width: int = 12) -> str:
     return f"{amount:>{width},.2f} {currency}"
 
 
+def _render_event_table(events: list[TaxEvent]) -> list[str]:
+    """Render a chronological transaction table for a section."""
+    lines: list[str] = []
+    lines.append("─" * 100)
+    lines.append(
+        f"{'Data':<12}{'Typ':<18}{'Instrument':<16}"
+        f"{'Przychód PLN':>14}{'Koszt PLN':>14}{'Zysk/Strata':>14}"
+    )
+    lines.append("─" * 100)
+    for e in sorted(events, key=lambda x: x.date):
+        profit = e.income_pln - e.cost_pln
+        lines.append(
+            f"{e.date.isoformat():<12}{e.event_type:<18}{e.symbol:<16}"
+            f"{_fmt(e.income_pln, 14)}{_fmt(e.cost_pln, 14)}{_fmt(profit, 14)}"
+        )
+    lines.append("─" * 100)
+    return lines
+
+
 def generate_year_report(report: YearReport) -> str:
-    """Generate text report for a single tax year."""
+    """Generate text report for a single tax year — three PIT-38 sections."""
     lines: list[str] = []
 
-    lines.append("═" * 60)
-    lines.append(f" PIT-38 — Rok podatkowy {report.year}")
-    lines.append("═" * 60)
+    # ───────────────────────────────────────────────────────────────
+    # SEKCJA 1: Papiery wartościowe → PIT-38 wiersz 1 (PIT-8C poz. 23-24)
+    # ───────────────────────────────────────────────────────────────
+    lines.append("═" * 70)
+    lines.append(f" Papiery wartościowe — Rok {report.year}")
+    lines.append(" → PIT-38 sekcja C wiersz 1 (PIT-8C poz. 23-24)")
+    lines.append("═" * 70)
     lines.append("")
-
-    # PIT-38 summary
-    lines.append(f"PRZYCHÓD (ze sprzedaży papierów wartościowych): {_fmt(report.pit38_income)} PLN")
-    lines.append(f"KOSZTY UZYSKANIA PRZYCHODU:                     {_fmt(report.pit38_cost)} PLN")
-
-    sell_costs = sum(e.cost_pln for e in report.pit38_events if e.event_type == "sell")
-    rollover_costs = sum(e.cost_pln for e in report.pit38_events if e.event_type == "rollover_cost")
-    rollover_income = sum(e.income_pln for e in report.pit38_events if e.event_type == "rollover_income")
-    fee_costs = sum(e.cost_pln for e in report.pit38_events if e.event_type == "fee")
-    fractional_income = sum(e.income_pln for e in report.pit38_events if e.event_type == "fractional_cash")
-
-    if rollover_costs > 0:
-        lines.append(f"  w tym rollover (swap overnight):                {_fmt(rollover_costs)} PLN")
+    lines.append(f"PRZYCHÓD:                                      {_fmt(report.papiery_wart_income)} PLN")
+    lines.append(f"KOSZTY UZYSKANIA PRZYCHODU:                    {_fmt(report.papiery_wart_cost)} PLN")
+    papiery_pl = report.papiery_wart_income - report.papiery_wart_cost
+    lines.append(f"DOCHÓD / STRATA:                               {_fmt(papiery_pl)} PLN")
+    fee_costs = sum(
+        (e.cost_pln for e in report.papiery_wart_events if e.event_type == "fee"),
+        Decimal("0"),
+    )
     if fee_costs > 0:
-        lines.append(f"  w tym opłaty brokera:                           {_fmt(fee_costs)} PLN")
-    if rollover_income > 0:
-        lines.append(f"  przychód rollover:                              {_fmt(rollover_income)} PLN")
-
-    lines.append(f"DOCHÓD / STRATA:                                {_fmt(report.pit38_profit_loss)} PLN")
-    lines.append(f"PODATEK (19%):                                  {_fmt(report.pit38_tax)} PLN")
+        lines.append(f"  w tym opłaty brokera:                          {_fmt(fee_costs)} PLN")
     lines.append("")
-
-    # Transaction details
-    if report.pit38_events:
-        lines.append("Szczegóły transakcji:")
-        lines.append("─" * 100)
-        lines.append(
-            f"{'Data':<12}{'Typ':<18}{'Instrument':<16}"
-            f"{'Przychód PLN':>14}{'Koszt PLN':>14}{'Zysk/Strata':>14}"
-        )
-        lines.append("─" * 100)
-
-        for e in sorted(report.pit38_events, key=lambda x: x.date):
-            profit = e.income_pln - e.cost_pln
-            lines.append(
-                f"{e.date.isoformat():<12}{e.event_type:<18}{e.symbol:<16}"
-                f"{_fmt(e.income_pln, 14)}{_fmt(e.cost_pln, 14)}{_fmt(profit, 14)}"
-            )
-
-        lines.append("─" * 100)
-        total_profit = report.pit38_income - report.pit38_cost
+    if report.papiery_wart_events:
+        lines.extend(_render_event_table(report.papiery_wart_events))
         lines.append(
             f"{'RAZEM':<12}{'':<18}{'':<16}"
-            f"{_fmt(report.pit38_income, 14)}{_fmt(report.pit38_cost, 14)}{_fmt(total_profit, 14)}"
+            f"{_fmt(report.papiery_wart_income, 14)}{_fmt(report.papiery_wart_cost, 14)}"
+            f"{_fmt(papiery_pl, 14)}"
         )
     lines.append("")
 
-    # PIT-36 / PIT-ZG (dividends)
-    lines.append("═" * 60)
-    lines.append(f" PIT-36 / PIT-ZG — Dywidendy zagraniczne {report.year}")
-    lines.append("═" * 60)
+    # ───────────────────────────────────────────────────────────────
+    # SEKCJA 2: Instrumenty pochodne → PIT-38 wiersz 3 (PIT-8C poz. 27-28)
+    # ───────────────────────────────────────────────────────────────
+    lines.append("═" * 70)
+    lines.append(f" Instrumenty pochodne — Rok {report.year}")
+    lines.append(" → PIT-38 sekcja C wiersz 3 (PIT-8C poz. 27-28)")
+    lines.append("═" * 70)
+    lines.append("")
+    if report.pochodne_events:
+        lines.append(f"PRZYCHÓD:                                      {_fmt(report.pochodne_income)} PLN")
+        lines.append(f"KOSZTY UZYSKANIA PRZYCHODU:                    {_fmt(report.pochodne_cost)} PLN")
+        pochodne_pl = report.pochodne_income - report.pochodne_cost
+        lines.append(f"DOCHÓD / STRATA:                               {_fmt(pochodne_pl)} PLN")
+        rollover_costs = sum(
+            (e.cost_pln for e in report.pochodne_events if e.event_type == "rollover_cost"),
+            Decimal("0"),
+        )
+        rollover_income = sum(
+            (e.income_pln for e in report.pochodne_events if e.event_type == "rollover_income"),
+            Decimal("0"),
+        )
+        if rollover_costs > 0:
+            lines.append(f"  w tym rollover (swap overnight):               {_fmt(rollover_costs)} PLN")
+        if rollover_income > 0:
+            lines.append(f"  przychód rollover:                             {_fmt(rollover_income)} PLN")
+        lines.append("")
+        lines.extend(_render_event_table(report.pochodne_events))
+        lines.append(
+            f"{'RAZEM':<12}{'':<18}{'':<16}"
+            f"{_fmt(report.pochodne_income, 14)}{_fmt(report.pochodne_cost, 14)}"
+            f"{_fmt(pochodne_pl, 14)}"
+        )
+    else:
+        lines.append("(brak transakcji w tym roku)")
+    lines.append("")
+
+    # ───────────────────────────────────────────────────────────────
+    # SUMA PIT-38 (kontrola)
+    # ───────────────────────────────────────────────────────────────
+    lines.append("═" * 70)
+    lines.append(f" SUMA PIT-38 (kontrola) — Rok {report.year}")
+    lines.append("═" * 70)
+    lines.append(f"PRZYCHÓD ŁĄCZNIE (wiersz 1 + 3):               {_fmt(report.pit38_income)} PLN")
+    lines.append(f"KOSZTY ŁĄCZNIE:                                {_fmt(report.pit38_cost)} PLN")
+    lines.append(f"DOCHÓD / STRATA:                               {_fmt(report.pit38_profit_loss)} PLN")
+    lines.append(f"PODATEK (19% od dochodu):                      {_fmt(report.pit38_tax)} PLN")
+    lines.append("")
+
+    # ───────────────────────────────────────────────────────────────
+    # SEKCJA 3: Dywidendy zagraniczne → PIT-38 sekcja G + PIT/ZG
+    # ───────────────────────────────────────────────────────────────
+    lines.append("═" * 70)
+    lines.append(f" Dywidendy zagraniczne — Rok {report.year}")
+    lines.append(" → PIT-38 sekcja G + załącznik PIT/ZG")
+    lines.append("═" * 70)
     lines.append("")
 
     lines.append(f"DYWIDENDY BRUTTO:                               {_fmt(report.dividends_income_pln)} PLN")
