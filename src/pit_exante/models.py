@@ -112,6 +112,14 @@ class TaxEvent:
     currency: str
     nbp_rate: Decimal
     details: str  # description for report
+    kind: "InstrumentKind" = None  # type: ignore[assignment]
+    # Set in calculator: SECURITY for stock/etf trades + commissions + fx fees;
+    # DERIVATIVE for CFD trades + rollovers. Default None to allow gradual
+    # migration of existing tests that construct TaxEvent without kind.
+
+    def __post_init__(self):
+        if self.kind is None:
+            self.kind = InstrumentKind.SECURITY
 
 
 @dataclass
@@ -132,12 +140,20 @@ class DividendEvent:
 @dataclass
 class YearReport:
     year: int
-    # PIT-38
+    # PIT-38 — total (= papiery + pochodne, kept for backward compat)
     pit38_income: Decimal = Decimal("0")
     pit38_cost: Decimal = Decimal("0")
     pit38_profit_loss: Decimal = Decimal("0")
     pit38_tax: Decimal = Decimal("0")
     pit38_events: list[TaxEvent] = field(default_factory=list)
+    # PIT-38 wiersz 1 — papiery wartościowe (PIT-8C poz. 23-24)
+    papiery_wart_income: Decimal = Decimal("0")
+    papiery_wart_cost: Decimal = Decimal("0")
+    papiery_wart_events: list[TaxEvent] = field(default_factory=list)
+    # PIT-38 wiersz 3 — instrumenty pochodne (PIT-8C poz. 27-28)
+    pochodne_income: Decimal = Decimal("0")
+    pochodne_cost: Decimal = Decimal("0")
+    pochodne_events: list[TaxEvent] = field(default_factory=list)
     # PIT-36 / PIT-ZG
     dividends_income_pln: Decimal = Decimal("0")
     dividends_tax_paid_pln: Decimal = Decimal("0")
