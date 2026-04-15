@@ -1,0 +1,6 @@
+{
+  "_comment": "Manual symbolType overrides for symbols delisted/rebranded in Exante catalog. Format: {symbolId: symbolType}. Used as fallback when /md/3.0/symbols/{id} returns 404. Source of truth: historical knowledge of instrument type at time of trading.",
+  "NGE.ARCA": "STOCK",
+  "U/U.TMX": "STOCK",
+  "EUR/USD.E.FX": "FX"
+}

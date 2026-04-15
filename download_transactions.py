@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download all transactions from Exante API."""
+"""Download all transactions and symbol metadata from Exante API."""
 
 import json
 import os
@@ -7,6 +7,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 from base64 import b64encode
 # Load .env manually (no external dependencies)
 env_path = Path(__file__).parent / ".env"
@@ -37,6 +38,35 @@ def fetch_transactions(account_id: str, offset: int = 0, limit: int = 1000) -> l
     req = Request(url, headers=HEADERS)
     with urlopen(req) as resp:
         return json.loads(resp.read())
+
+
+def fetch_symbol_metadata(symbol_id: str) -> dict | None:
+    """Fetch symbol metadata from Exante /symbols/{id}. Returns None on 404 (delisted)."""
+    url = f"{BASE_URL}/symbols/{symbol_id}"
+    req = Request(url, headers=HEADERS)
+    try:
+        with urlopen(req) as resp:
+            return json.loads(resp.read())
+    except HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+
+
+def download_all_symbol_metadata(symbol_ids: list[str]) -> tuple[dict, list[str]]:
+    """Fetch metadata for all symbols. Returns (found_metadata, missing_404_ids)."""
+    found: dict = {}
+    missing: list[str] = []
+    for sid in symbol_ids:
+        meta = fetch_symbol_metadata(sid)
+        if meta is None:
+            missing.append(sid)
+            print(f"  404: {sid}")
+        else:
+            found[sid] = meta
+            print(f"  OK:  {sid}  symbolType={meta.get('symbolType')}")
+        time.sleep(0.5)  # rate limit (Exante: 60 req/min on Symbols scope)
+    return found, missing
 
 
 def download_all(account_id: str) -> list:
@@ -86,6 +116,25 @@ def main():
         first = datetime.fromtimestamp(all_txns[0]["timestamp"] / 1000)
         last = datetime.fromtimestamp(all_txns[-1]["timestamp"] / 1000)
         print(f"\nDate range: {first.date()} to {last.date()}")
+
+    # Symbol metadata — needed for InstrumentKind classification (CFD vs STOCK)
+    unique_symbols = sorted({t["symbolId"] for t in all_txns if t.get("symbolId")})
+    print(f"\nFetching metadata for {len(unique_symbols)} unique symbols...")
+    found, missing = download_all_symbol_metadata(unique_symbols)
+
+    symbols_path = DATA_DIR / "symbols.json"
+    with open(symbols_path, "w") as f:
+        json.dump(found, f, indent=2)
+    print(f"\n{len(found)} symbols saved to {symbols_path}")
+
+    if missing:
+        missing_path = DATA_DIR / "symbols_missing.json"
+        with open(missing_path, "w") as f:
+            json.dump(missing, f, indent=2)
+        print(
+            f"{len(missing)} symbols returned 404 (delisted/rebrand) — see {missing_path}. "
+            f"Add them to config/symbol_overrides.json with manual symbolType."
+        )
 
 
 if __name__ == "__main__":
