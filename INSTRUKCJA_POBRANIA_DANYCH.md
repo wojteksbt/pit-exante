@@ -4,7 +4,7 @@
 
 1. Zaloguj się: https://exante.eu
 2. Przejdź do: **Reports** > **Add Custom Report**
-3. **Account:** wybierz **ACC001 (All segregated)** — żeby objąć wszystkie subkonta
+3. **Account:** wybierz swoje konto główne — opcja **"(All segregated)"** obejmie wszystkie subkonta
 4. **Build report in:** zaznacz **CSV**
 5. **Currency:** zostaw domyślną (przeliczamy na PLN po kursie NBP)
 

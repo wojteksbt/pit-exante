@@ -1,4 +1,4 @@
-"""Tests for download_transactions module — symbol metadata fetching."""
+"""Unit tests for download_transactions module — symbol metadata fetching."""
 
 from __future__ import annotations
 
@@ -76,29 +76,3 @@ class TestFetchSymbolMetadata:
 
         result = download_transactions.fetch_symbol_metadata("DELISTED.X")
         assert result is None
-
-
-class TestSymbolCoverage:
-    """Every unique symbolId in transactions.json must be classifiable."""
-
-    def test_all_symbols_in_transactions_have_metadata_or_override(self):
-        txns_path = ROOT / "data" / "transactions.json"
-        symbols_path = ROOT / "data" / "symbols.json"
-        overrides_path = ROOT / "config" / "symbol_overrides.json"
-
-        if not txns_path.exists():
-            pytest.skip("data/transactions.json not present (download required)")
-
-        txns = json.loads(txns_path.read_text())
-        unique_symbols = {t["symbolId"] for t in txns if t.get("symbolId")}
-
-        symbols = json.loads(symbols_path.read_text()) if symbols_path.exists() else {}
-        overrides_raw = json.loads(overrides_path.read_text())
-        overrides = {k: v for k, v in overrides_raw.items() if not k.startswith("_")}
-
-        classifiable = set(symbols) | set(overrides)
-        missing = unique_symbols - classifiable
-        assert not missing, (
-            f"Symbols missing from data/symbols.json AND config/symbol_overrides.json: "
-            f"{sorted(missing)}. Add to overrides or fetch via download_transactions.py."
-        )

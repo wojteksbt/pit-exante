@@ -1,0 +1,29 @@
+# Pre-commit hooks — safety net for public repo.
+# Catches accidental commits of personal data and credentials.
+# Install: `pre-commit install` (requires the `pre-commit` CLI).
+#
+# Patterns are generic so the hook config itself reveals no secrets:
+# - gitleaks catches API keys, tokens, UUIDs matching secret patterns
+# - Exante account IDs match GEC\d{4}; block any reintroduction in tracked code
+# - Personal tax amounts: the list below is loaded from .personal-amounts (gitignored)
+#   via grep --file=; missing file = pattern check is a no-op
+
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.0
+    hooks:
+      - id: gitleaks
+
+  - repo: local
+    hooks:
+      - id: no-exante-account-id
+        name: Block any real Exante account ID pattern (GEC####)
+        entry: 'GEC[0-9]{4}'
+        language: pygrep
+        exclude: '^(docs/internal/|tests/personal/|data/|output/|\.env$|\.pre-commit-config\.yaml)'
+
+      - id: no-personal-amounts
+        name: Block amounts listed in .personal-amounts (if present)
+        entry: bash -c 'if [ -f .personal-amounts ]; then ! grep -HnF -f .personal-amounts "$@" || exit 1; fi' --
+        language: system
+        exclude: '^(docs/internal/|tests/personal/|data/|output/|\.personal-amounts$)'

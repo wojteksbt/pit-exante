@@ -4,3 +4,9 @@ output/
 __pycache__/
 *.pyc
 .DS_Store
+.pytest_cache/
+
+# Personal working files — never commit
+docs/internal/
+tests/personal/
+.personal-amounts

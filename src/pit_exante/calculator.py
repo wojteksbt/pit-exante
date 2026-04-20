@@ -78,10 +78,10 @@ def _classify_event_kind(
 def _normalize_account(account_id: str) -> str:
     """Normalize subaccount to main account for FIFO purposes.
 
-    Exante subaccounts (e.g., ACC001.001, ACC001.002) share a single FIFO pool.
-    The rozliczenie Exante confirms combined FIFO across subaccounts.
+    Exante subaccounts (e.g., XXX0000.001, XXX0000.002) share a single FIFO pool.
+    The Exante statement confirms combined FIFO across subaccounts.
     """
-    # Strip subaccount suffix: ACC001.001 → ACC001
+    # Strip subaccount suffix: XXX0000.001 → XXX0000
     parts = account_id.rsplit(".", 1)
     if len(parts) == 2 and parts[1].isdigit():
         return parts[0]

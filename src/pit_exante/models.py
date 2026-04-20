@@ -66,7 +66,7 @@ class Transaction:
     uuid: str
     timestamp: int  # ms since epoch
     value_date: date | None  # from valueDate
-    account_id: str  # ACC001.001 / ACC001.002
+    account_id: str  # e.g. XXX0000.001 / XXX0000.002
     symbol_id: str | None
     operation_type: str  # TRADE, COMMISSION, etc.
     sum: Decimal  # quantity (TRADE) or amount

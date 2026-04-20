@@ -86,14 +86,20 @@ def download_all(account_id: str) -> list:
 
 
 def main():
-    # Discover subaccounts from first fetch
-    print("Fetching ACC001.001...")
-    txns_001 = download_all("ACC001.001")
+    # Subaccounts from EXANTE_SUBACCOUNTS env var, comma-separated.
+    # Example: EXANTE_SUBACCOUNTS="ABC1234.001,ABC1234.002"
+    # Fallback: single account from EXANTE_ACCOUNT (no .NNN suffix).
+    raw = os.environ.get("EXANTE_SUBACCOUNTS", "").strip()
+    if raw:
+        subaccounts = [s.strip() for s in raw.split(",") if s.strip()]
+    else:
+        subaccounts = [os.environ["EXANTE_ACCOUNT"]]
 
-    print("Fetching ACC001.002...")
-    txns_002 = download_all("ACC001.002")
+    all_txns: list = []
+    for sub in subaccounts:
+        print(f"Fetching {sub}...")
+        all_txns.extend(download_all(sub))
 
-    all_txns = txns_001 + txns_002
     all_txns.sort(key=lambda t: t["timestamp"])
 
     out_path = DATA_DIR / "transactions.json"
