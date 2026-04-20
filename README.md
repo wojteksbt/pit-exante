@@ -11,6 +11,20 @@ Kalkulator polskiego podatku PIT dla inwestorów korzystających z brokera [Exan
 - Grupuje dywidendy po kraju źródła dla PIT-ZG z automatycznym rozliczeniem podatku pobranego u źródła
 - Generuje raport tekstowy per rok + zbiorczy CSV
 
+## Dlaczego ten projekt, skoro Exante wystawia PIT-8C?
+
+Exante udostępnia raport podatkowy w formacie PIT-8C, ale w praktyce jest kilka miejsc, w których warto przeliczyć samodzielnie lub skonfrontować wyniki:
+
+1. **Klasyfikacja papiery wartościowe vs instrumenty pochodne.** PIT-8C ma osobne pozycje 23-24 (papiery: akcje, ETF) i 27-28 (pochodne: CFD, futures), które w PIT-38 trafiają do osobnych wierszy (1 i 3) z osobnym zyskiem/stratą. Podział zależy od `symbolType` w bazie brokera — warto sprawdzić, czy każdy instrument z Twojego portfela został przypisany tam, gdzie trzeba.
+2. **Kurs NBP.** Art. 11a ust. 1-2 ustawy o PIT wymaga średniego kursu NBP z **ostatniego dnia roboczego poprzedzającego** dzień transakcji, z uwzględnieniem polskich świąt i weekendów. Metoda przeliczenia stosowana przez brokera może się różnić — ten program ją jawnie implementuje i pokazuje, jakim kursem przeliczył każdą pozycję.
+3. **Dywidendy zagraniczne per kraj (PIT-ZG).** Każdy kraj źródła dywidendy wymaga osobnego załącznika PIT-ZG z kwotą podatku pobranego u źródła. Program grupuje dywidendy po kraju (USA, Kanada, itd.) i liczy podatek do dopłaty w Polsce z uwzględnieniem art. 30a ust. 9 (odliczenie do wysokości polskiego podatku).
+4. **Zaokrąglenia.** Ustawa wymaga kwot groszowych per rekord, dopiero potem sumowania — zaokrąglenie sumy "na końcu" może dać inny wynik niż per rekord. Różnice są małe (kilka groszy per rok), ale widoczne przy pełnej weryfikacji.
+5. **FIFO łącznie dla subkont.** Art. 24 ust. 10 ustawy o PIT dotyczy rachunku papierów wartościowych — subkonta Exante (`.001`, `.002`) to jeden rachunek. Program normalizuje subkonta do konta głównego, żeby FIFO działało na wspólnej puli.
+6. **Forex (wymiana EUR/USD u brokera).** Ręczna konwersja walut nie jest zdarzeniem podatkowym dla osoby fizycznej (art. 24c dotyczy działalności gospodarczej), ale bywa raportowana jako TRADE. Program pomija te pozycje i zalicza tylko prowizję jako koszt.
+7. **Corporate actions.** Stock splity, reverse splity i fractional cash payments wymagają specjalnej obsługi FIFO (korekta quantity/price, wydzielenie sprzedaży ułamka). Program implementuje to jawnie i pokazuje przeliczenia.
+
+**W skrócie:** ten program służy jako druga, niezależna kalkulacja, którą porównujesz z raportem brokera. Zgodne wyniki = pewność. Rozbieżności → zaglądasz w szczegóły i wiesz, gdzie zadać pytanie księgowej.
+
 ## Uwaga podatkowa
 
 Ten program wspiera rozliczenie, ale **nie zastępuje doradztwa podatkowego**. Weryfikuj wyniki z księgową/doradcą.
