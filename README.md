@@ -19,10 +19,8 @@ Raport Exante w formacie PIT-8C ma konkretne rozbieżności z polskimi przepisam
 2. **Zaokrąglenia dywidend.** Ustawa wymaga kwot groszowych per rekord, dopiero potem sumowania. Raport Exante zaokrągla sumę do pełnych złotych — daje to różnice rzędu kilku groszy do kilku złotych per rok względem poprawnego przeliczenia per rekord.
 3. **Dywidendy zagraniczne.** PIT-8C to formularz dla zysków kapitałowych (art. 30b). Dywidendy (art. 30a) rozlicza się na PIT-36 z załącznikiem PIT-ZG per kraj źródła — w raporcie Exante ich nie ma w ogóle. Program pobiera z API transakcje DIVIDEND oraz TAX/US TAX (podatek u źródła), grupuje per kraj (USA, Kanada, itd.) i liczy podatek do dopłaty w Polsce z uwzględnieniem art. 30a ust. 9 (odliczenie do wysokości polskiego podatku).
 4. **Forex (wymiana EUR/USD u brokera).** Ręczna konwersja walut nie jest zdarzeniem podatkowym dla osoby fizycznej (art. 24c dotyczy działalności gospodarczej), ale Exante raportuje ją jako TRADE. Program pomija te pozycje i zalicza wyłącznie prowizję jako koszt.
-5. **Kurs NBP.** Art. 11a ust. 1-2 ustawy o PIT wymaga średniego kursu NBP z **ostatniego dnia roboczego poprzedzającego** dzień transakcji, z obsługą polskich świąt i weekendów. Program tę regułę implementuje jawnie i pokazuje dla każdej transakcji, jakim kursem i z jakiej daty została przeliczona — każdą pozycję można zweryfikować niezależnie.
-6. **Corporate actions.** Stock splity, reverse splity i fractional cash payments wymagają korekty FIFO (quantity/price, wydzielenie sprzedaży ułamka). Program implementuje każdy przypadek jawnie, z przeliczeniami widocznymi w raporcie — łatwo porównać z tym, co zrobił broker.
 
-**W skrócie:** druga, niezależna kalkulacja. Zgodne wyniki = pewność. Rozbieżności → wiesz, gdzie szukać przyczyny.
+**W skrócie:** dla CFD i dywidend program jest jedynym źródłem danych (w raporcie Exante ich nie ma). Dla pozostałych pozycji — druga, niezależna kalkulacja do porównania z raportem brokera.
 
 ## Uwaga podatkowa
 
