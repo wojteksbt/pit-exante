@@ -19,8 +19,9 @@ Raport Exante w formacie PIT-8C ma konkretne rozbieżności z polskimi przepisam
 2. **Zaokrąglenia dywidend.** Ustawa wymaga kwot groszowych per rekord, dopiero potem sumowania. Raport Exante zaokrągla sumę do pełnych złotych — daje to różnice rzędu kilku groszy do kilku złotych per rok względem poprawnego przeliczenia per rekord.
 3. **Dywidendy zagraniczne.** PIT-8C to formularz dla zysków kapitałowych (art. 30b). Dywidendy (art. 30a) rozlicza się na PIT-36 z załącznikiem PIT-ZG per kraj źródła — w raporcie Exante ich nie ma w ogóle. Program pobiera z API transakcje DIVIDEND oraz TAX/US TAX (podatek u źródła), grupuje per kraj (USA, Kanada, itd.) i liczy podatek do dopłaty w Polsce z uwzględnieniem art. 30a ust. 9 (odliczenie do wysokości polskiego podatku).
 4. **Forex (wymiana EUR/USD u brokera).** Ręczna konwersja walut nie jest zdarzeniem podatkowym dla osoby fizycznej (art. 24c dotyczy działalności gospodarczej), ale Exante raportuje ją jako TRADE. Program pomija te pozycje i zalicza wyłącznie prowizję jako koszt.
+5. **Kurs NBP dla kosztu nabycia.** Exante przelicza koszt nabycia papieru po kursie NBP z dnia sprzedaży, nie z dnia zakupu. Ustawa (art. 11a ust. 2) wymaga kursu średniego NBP z ostatniego dnia roboczego poprzedzającego **dzień poniesienia kosztu** (czyli dzień zakupu), nie dzień powstania przychodu. Dla długo utrzymywanej pozycji różnica kursowa między tymi dwoma dniami przekłada się na istotną korektę w PIT-8C — zwykle zaniżone koszty. Program liczy każdy lot FIFO po kursie z D-1 przed datą jego zakupu i zachowuje ten kurs w kolejce aż do sprzedaży.
 
-**W skrócie:** dla CFD i dywidend program jest jedynym źródłem danych (w raporcie Exante ich nie ma). Dla pozostałych pozycji — druga, niezależna kalkulacja do porównania z raportem brokera.
+**W skrócie:** dla CFD i dywidend program jest jedynym źródłem danych (w raporcie Exante ich nie ma). Dla papierów wartościowych — druga, niezależna kalkulacja; rozbieżność vs raport Exante wynika głównie z innej metodologii kursowej (punkt 5) i zaokrągleń (punkt 2).
 
 ## Uwaga podatkowa
 
