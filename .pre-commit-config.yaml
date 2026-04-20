@@ -1,12 +1,14 @@
 # Pre-commit hooks — safety net for public repo.
 # Catches accidental commits of personal data and credentials.
-# Install: `pre-commit install` (requires the `pre-commit` CLI).
+# Install (both stages): `pre-commit install --hook-type pre-commit --hook-type commit-msg`
 #
 # Patterns are generic so the hook config itself reveals no secrets:
 # - gitleaks catches API keys, tokens, UUIDs matching secret patterns
-# - Exante account IDs match GEC\d{4}; block any reintroduction in tracked code
+# - Exante account IDs match GEC\d{4}; block any reintroduction in tracked code AND commit messages
 # - Personal tax amounts: the list below is loaded from .personal-amounts (gitignored)
 #   via grep --file=; missing file = pattern check is a no-op
+
+default_install_hook_types: [pre-commit, commit-msg]
 
 repos:
   - repo: https://github.com/gitleaks/gitleaks
@@ -17,7 +19,7 @@ repos:
   - repo: local
     hooks:
       - id: no-exante-account-id
-        name: Block any real Exante account ID pattern (GEC####)
+        name: Block any real Exante account ID pattern (GEC####) in tracked files
         entry: 'GEC[0-9]{4}'
         language: pygrep
         exclude: '^(docs/internal/|tests/personal/|data/|output/|\.env$|\.pre-commit-config\.yaml)'
@@ -27,3 +29,9 @@ repos:
         entry: bash -c 'if [ -f .personal-amounts ]; then ! grep -HnF -f .personal-amounts "$@" || exit 1; fi' --
         language: system
         exclude: '^(docs/internal/|tests/personal/|data/|output/|\.personal-amounts$)'
+
+      - id: no-exante-account-id-in-commit-msg
+        name: Block GEC#### pattern in commit messages
+        entry: bash -c '! grep -qE "GEC[0-9]{4}" "$1"' --
+        language: system
+        stages: [commit-msg]

@@ -6,6 +6,11 @@ __pycache__/
 .DS_Store
 .pytest_cache/
 
+# Defensive: block broker/tax exports anywhere in the tree
+*.csv
+*.pdf
+*.xlsx
+
 # Personal working files — never commit
 docs/internal/
 tests/personal/
