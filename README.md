@@ -13,7 +13,7 @@ Kalkulator polskiego podatku PIT dla inwestorów korzystających z brokera [Exan
 
 ## Uwaga podatkowa
 
-Ten program wspiera rozliczenie, ale **nie zastępuje doradztwa podatkowego**. Weryfikuj wyniki z księgową/doradcą. Autorzy nie biorą odpowiedzialności za błędne zeznania.
+Ten program wspiera rozliczenie, ale **nie zastępuje doradztwa podatkowego**. Weryfikuj wyniki z księgową/doradcą.
 
 ## Wymagania
 
@@ -113,8 +113,8 @@ FIFO działa osobno per `(rachunek, instrument)` z normalizacją subkont do kont
 
 - Program zakłada jedną walutę rozliczenia per instrument (derivowaną z exchange suffix lub `asset`). Egzotyczne instrumenty wielowalutowe nie są wspierane.
 - Nieznane `symbolType` albo brak metadanych → `UnknownInstrumentError` / `UnknownTypeError`. Rozwiązanie: dodaj wpis do `config/symbol_overrides.json` i/lub rozszerz `EXANTE_TYPE_TO_KIND` w `symbol_metadata.py`.
-- Weryfikowano na realnych danych 2020-2026 (akcje, ETF, jeden CFD, wymiana EUR/USD). Inne przypadki (opcje, futures, obligacje) nie były testowane.
+- Testowane przypadki: akcje, ETF, CFD, wymiana EUR/USD. Opcje, futures, obligacje nie były weryfikowane.
 
 ## Licencja
 
-MIT. Używaj, modyfikuj, dziel się. Informuj mnie, jeśli znajdziesz błąd w logice podatkowej — wspólne zainteresowanie.
+MIT.
