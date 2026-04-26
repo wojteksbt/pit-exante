@@ -32,6 +32,11 @@ from .symbol_metadata import classify as classify_kind
 
 logger = logging.getLogger(__name__)
 
+# Placeholder symbols used internally for tax-only events that have no
+# associated instrument (US TAX recalculation, unmatched standalone TAX
+# entries). These are exempt from the kind-classification fail-fast.
+_SYNTHETIC_DIVIDEND_SYMBOLS = frozenset({"US_TAX_RECALC", "TAX_UNLINKED"})
+
 
 def _load_kind_lookup(transactions_path: Path) -> tuple[dict, dict]:
     """Load symbols.json + symbol_overrides.json relative to the project root.
@@ -407,6 +412,16 @@ def calculate(transactions_path: str | Path) -> tuple[list[YearReport], dict]:
                 tx_date = _timestamp_date(t)
                 nbp_rate = get_rate(t.currency, tx_date)
                 symbol = t.symbol_id or t.asset
+                country = derive_country(symbol, currency=t.currency)
+
+                if country == "??" and t.currency == "PLN":
+                    raise ValueError(
+                        f"Unknown country for PLN dividend {symbol} "
+                        f"(uuid={t.uuid}, date={tx_date.isoformat()}, "
+                        f"comment={t.comment!r}). "
+                        f"Add exchange to _EXCHANGE_COUNTRY in country.py, "
+                        f"or set country explicitly."
+                    )
 
                 div_event = DividendEvent(
                     date=tx_date,
@@ -419,7 +434,7 @@ def calculate(transactions_path: str | Path) -> tuple[list[YearReport], dict]:
                     currency=t.currency,
                     nbp_rate=nbp_rate,
                     comment=t.comment or "",
-                    country=derive_country(symbol, currency=t.currency),
+                    country=country,
                 )
                 dividend_events.append(div_event)
                 dividend_by_uuid[t.uuid] = div_event
@@ -496,6 +511,23 @@ def calculate(transactions_path: str | Path) -> tuple[list[YearReport], dict]:
                                     break
 
                             if parent_div is not None:
+                                if parent_div.date.year < tx_date.year:
+                                    raise ValueError(
+                                        f"Refund cross-year detected: {t.sum} {t.currency} "
+                                        f"received {tx_date.isoformat()} relates to dividend "
+                                        f"{parent_div.symbol} from "
+                                        f"{parent_div.date.isoformat()} "
+                                        f"({parent_div.date.year}). "
+                                        f"Polish PIT does not have unambiguous handling for "
+                                        f"this case — requires manual decision:\n"
+                                        f"  (A) Korekta PIT-{parent_div.date.year}: zmniejsz "
+                                        f"tax_paid o refund, ewentualnie czynny żal.\n"
+                                        f"  (B) Negatywny WHT w PIT-{tx_date.year}: zmniejsz "
+                                        f"tax_paid roku otrzymania.\n"
+                                        f"Skonsultuj doradcę podatkowego. Po decyzji: "
+                                        f"zmodyfikuj data/transactions.json lub dodaj "
+                                        f"override do code path."
+                                    )
                                 # Merge — recompute tax_withheld_pln using parent's kurs
                                 if t.sum > 0:
                                     parent_div.tax_withheld -= t.sum
@@ -504,6 +536,16 @@ def calculate(transactions_path: str | Path) -> tuple[list[YearReport], dict]:
                                 parent_div.tax_withheld_pln = to_pln(
                                     parent_div.tax_withheld, parent_div.nbp_rate
                                 )
+                                if parent_div.tax_withheld < 0:
+                                    raise ValueError(
+                                        f"Over-refund detected: refund {t.sum} {t.currency} "
+                                        f"(uuid={t.uuid}) exceeds original WHT for "
+                                        f"{parent_div.symbol} on "
+                                        f"{parent_div.date.isoformat()}. "
+                                        f"parent.tax_withheld would become "
+                                        f"{parent_div.tax_withheld}. "
+                                        f"Possible Exante data error — investigate."
+                                    )
                                 tax_to_dividend_map[t.uuid] = parent_div
                             else:
                                 if t.sum > 0:
@@ -718,21 +760,31 @@ def calculate(transactions_path: str | Path) -> tuple[list[YearReport], dict]:
     for event in tax_events:
         event.kind = _classify_event_kind(event, symbols, overrides)
 
-    # KROK 3 (P5 defensive): warn if a CFD pays dividend (not in current data,
-    # but Exante may emit synthetic dividend adjustments on some CFDs — those
-    # should be classified as DERIVATIVE income, not as PIT-38 sekcja G dividend).
+    # KROK 3 (P5 defensive): fail-fast if a CFD pays dividend or symbol is
+    # unknown — book-keeping for either case requires manual decision and
+    # silent skip would produce a silently-wrong PIT.
+    # Synthetic placeholder symbols (created above for US tax-recalculation
+    # events with no matching instrument) are exempt — they represent
+    # tax-only adjustments rather than instrument cashflows.
     for div in dividend_events:
+        if div.symbol in _SYNTHETIC_DIVIDEND_SYMBOLS:
+            continue
         try:
             kind = classify_kind(div.symbol, symbols, overrides)
-        except UnknownInstrumentError:
-            continue
+        except UnknownInstrumentError as e:
+            raise ValueError(
+                f"Unknown instrument {div.symbol} for dividend on "
+                f"{div.date.isoformat()} (account={div.account_id}). "
+                f"Add to data/symbols.json or "
+                f"config/symbol_overrides.json before running calculator. "
+                f"({e})"
+            )
         if kind == InstrumentKind.DERIVATIVE:
-            logger.warning(
-                "Dividend on CFD/derivative %s on %s not yet supported, "
-                "treating as regular foreign dividend (PIT-38 sekcja G). "
-                "Verify with tax advisor whether this should be income from "
-                "derivative instruments instead (PIT-38 sekcja C wiersz 3).",
-                div.symbol, div.date,
+            raise ValueError(
+                f"CFD/derivative dividend not supported: {div.symbol} on "
+                f"{div.date.isoformat()}. Księgowanie wymaga konsultacji z "
+                f"doradcą — sekcja G (zwykła zagraniczna) vs sekcja C wiersz 3 "
+                f"(instrumenty pochodne). Po decyzji: dodaj override do code path."
             )
 
     # Aggregate by year
