@@ -1,9 +1,12 @@
 """Tests for NBP exchange rate module."""
 
+import io
+import json
 import pytest
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -14,6 +17,7 @@ from pit_exante.nbp import (
     _is_business_day,
     _easter,
     _polish_holidays,
+    _fetch_from_api,
 )
 
 
@@ -138,3 +142,46 @@ class TestGetRate:
         rate1 = get_rate("usd", date(2021, 2, 23))
         rate2 = get_rate("USD", date(2021, 2, 23))
         assert rate1 == rate2
+
+
+class TestFetchValidation:
+    """Defensive validation that NBP response matches the request."""
+
+    def _mock_response(self, body: dict):
+        class _Resp:
+            def __enter__(self_inner):
+                return self_inner
+            def __exit__(self_inner, *args):
+                return False
+            def read(self_inner):
+                return json.dumps(body).encode()
+        return _Resp()
+
+    def test_effective_date_mismatch_raises(self):
+        # NBP would never do this today, but if it ever returns "nearest available"
+        # silently, we must fail-fast rather than poison the cache.
+        body = {
+            "code": "USD",
+            "rates": [{"effectiveDate": "2024-12-23", "mid": "4.1234"}],
+        }
+        with patch("pit_exante.nbp.urlopen", return_value=self._mock_response(body)):
+            with pytest.raises(RuntimeError, match="NBP returned rate for 2024-12-23"):
+                _fetch_from_api("USD", date(2024, 12, 24))
+
+    def test_currency_code_mismatch_raises(self):
+        body = {
+            "code": "EUR",  # asked USD
+            "rates": [{"effectiveDate": "2024-12-23", "mid": "4.1234"}],
+        }
+        with patch("pit_exante.nbp.urlopen", return_value=self._mock_response(body)):
+            with pytest.raises(RuntimeError, match="Currency mismatch"):
+                _fetch_from_api("USD", date(2024, 12, 23))
+
+    def test_valid_response_returns_rate(self):
+        body = {
+            "code": "USD",
+            "rates": [{"effectiveDate": "2024-12-23", "mid": "4.0000"}],
+        }
+        with patch("pit_exante.nbp.urlopen", return_value=self._mock_response(body)):
+            rate = _fetch_from_api("USD", date(2024, 12, 23))
+            assert rate == Decimal("4.0000")

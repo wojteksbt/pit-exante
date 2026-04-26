@@ -114,8 +114,17 @@ def _fetch_from_api(currency: str, d: date) -> Decimal | None:
         _last_request_time = time.time()
         with urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
-            rate = data["rates"][0]["mid"]
-            return Decimal(str(rate))
+            rate_entry = data["rates"][0]
+            if rate_entry["effectiveDate"] != d.isoformat():
+                raise RuntimeError(
+                    f"NBP returned rate for {rate_entry['effectiveDate']}, "
+                    f"asked {d.isoformat()} ({currency})"
+                )
+            if data.get("code", "").upper() != currency.upper():
+                raise RuntimeError(
+                    f"Currency mismatch: asked {currency}, got {data.get('code')}"
+                )
+            return Decimal(str(rate_entry["mid"]))
     except HTTPError as e:
         if e.code == 404:
             return None
