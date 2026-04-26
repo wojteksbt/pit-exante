@@ -113,6 +113,11 @@ def _timestamp_date(t: Transaction) -> date:
     Exante rozliczenia use timestamp date for dividends and tax events,
     not the valueDate (payment date). This affects year assignment and NBP rates.
     Uses Polish timezone (CET) — PIT is filed with Polish tax authority.
+
+    Convention verified against PitFx (firma rozliczająca Exante) — the
+    NGE.ARCA case from PitFx PDF 2022 (timestamp 2022-12-29, valueDate
+    2023-01-03) is booked into PIT-2022 using the timestamp date, matching
+    this implementation.
     """
     return datetime.fromtimestamp(t.timestamp / 1000, tz=_TZ_POLAND).date()
 
@@ -458,10 +463,16 @@ def calculate(transactions_path: str | Path) -> tuple[list[YearReport], dict]:
                         div.tax_withheld_pln += tax_pln
                     tax_to_dividend_map[t.uuid] = div
                 elif t.parent_uuid and t.parent_uuid in tax_to_dividend_map:
-                    # Rollback: parentUuid → TAX → DIVIDEND (chain following)
+                    # Rollback: parentUuid → TAX → DIVIDEND (chain following).
+                    # Mirror direct-link sign handling: positive sum = refund,
+                    # negative sum = additional WHT.
                     div = tax_to_dividend_map[t.parent_uuid]
-                    div.tax_withheld -= tax_amount
-                    div.tax_withheld_pln -= tax_pln
+                    if t.sum > 0:
+                        div.tax_withheld -= tax_amount
+                        div.tax_withheld_pln -= tax_pln
+                    else:
+                        div.tax_withheld += tax_amount
+                        div.tax_withheld_pln += tax_pln
                 elif t.operation_type == "TAX" and not t.parent_uuid and t.symbol_id:
                     # TAX without parentUuid — match by timestamp proximity + symbol
                     matched = _match_tax_by_timestamp(
@@ -503,7 +514,8 @@ def calculate(transactions_path: str | Path) -> tuple[list[YearReport], dict]:
                                 reverse=True,
                             ):
                                 if (
-                                    ev.account_id == t.account_id
+                                    _normalize_account(ev.account_id)
+                                    == _normalize_account(t.account_id)
                                     and ev.gross_amount > 0
                                     and ts < t.timestamp
                                 ):
@@ -655,9 +667,6 @@ def calculate(transactions_path: str | Path) -> tuple[list[YearReport], dict]:
                         fractional_cash.currency if fractional_cash else removal.currency,
                         _effective_date(fractional_cash) if fractional_cash else removal_date
                     ) if fractional_cash else nbp_rate
-
-                    # Parse split ratio from comment (e.g., "Stock Split 1 for 3" → ratio=3)
-                    FifoEngine.parse_split_ratio(removal.comment or addition.comment or "")
 
                     events = fifo.apply_reverse_split(
                         account_id=fifo_acct_removal,

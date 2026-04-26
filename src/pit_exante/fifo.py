@@ -283,7 +283,10 @@ class FifoEngine:
         )
         queue.append(new_lot)
 
-        # Fractional cash payment = taxable event (zero cost per Exante convention)
+        # Fractional cash payment = taxable event with cost=0. This matches
+        # PitFx convention verified against Trade2020.pdf (REMX 2020 reverse
+        # split case) — the cash leg is booked as 100% income with no cost
+        # basis allocated from the consumed lots.
         if fractional_cash and fractional_cash > 0:
             fractional_income_pln = to_pln(fractional_cash, nbp_rate)
 
