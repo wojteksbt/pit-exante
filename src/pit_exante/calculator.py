@@ -11,11 +11,12 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 from .classifier import classify
-from .country import derive_country
+from .country import derive_country, upo_rate
 from .fifo import FifoEngine
 from .models import (
     BARE_CURRENCIES,
     TAX_RATE,
+    CountryDividend,
     DividendEvent,
     InstrumentKind,
     TaxCategory,
@@ -475,37 +476,66 @@ def calculate(transactions_path: str | Path) -> tuple[list[YearReport], dict]:
                                 div.tax_withheld += tax_amount
                                 div.tax_withheld_pln += tax_pln
                         else:
-                            # Standalone US TAX (recalculation or no matching dividend)
-                            if t.sum > 0:
-                                # Positive = refund → negative tax withheld
-                                div_event = DividendEvent(
-                                    date=tx_date,
-                                    symbol=symbol,
-                                    account_id=t.account_id,
-                                    gross_amount=Decimal("0"),
-                                    gross_amount_pln=Decimal("0"),
-                                    tax_withheld=-t.sum,
-                                    tax_withheld_pln=to_pln(-t.sum, nbp_rate),
-                                    currency=t.currency,
-                                    nbp_rate=nbp_rate,
-                                    comment=t.comment,
-                                    country=derive_country(symbol, currency=t.currency),
+                            # Standalone US TAX (recalculation or no matching dividend).
+                            # Try first to link cross-date refund to nearest preceding
+                            # parent dividend (same symbol+account) — per art. 11a ust. 2
+                            # WHT i jego korekta używają kursu NBP z dnia oryginalnej
+                            # dywidendy (PitFx convention).
+                            parent_div = None
+                            for ts, ev in sorted(
+                                dividend_txns_by_symbol.get(symbol, []),
+                                key=lambda x: x[0],
+                                reverse=True,
+                            ):
+                                if (
+                                    ev.account_id == t.account_id
+                                    and ev.gross_amount > 0
+                                    and ts < t.timestamp
+                                ):
+                                    parent_div = ev
+                                    break
+
+                            if parent_div is not None:
+                                # Merge — recompute tax_withheld_pln using parent's kurs
+                                if t.sum > 0:
+                                    parent_div.tax_withheld -= t.sum
+                                else:
+                                    parent_div.tax_withheld += tax_amount
+                                parent_div.tax_withheld_pln = to_pln(
+                                    parent_div.tax_withheld, parent_div.nbp_rate
                                 )
+                                tax_to_dividend_map[t.uuid] = parent_div
                             else:
-                                div_event = DividendEvent(
-                                    date=tx_date,
-                                    symbol=symbol,
-                                    account_id=t.account_id,
-                                    gross_amount=Decimal("0"),
-                                    gross_amount_pln=Decimal("0"),
-                                    tax_withheld=tax_amount,
-                                    tax_withheld_pln=tax_pln,
-                                    currency=t.currency,
-                                    nbp_rate=nbp_rate,
-                                    comment=t.comment,
-                                    country=derive_country(symbol, currency=t.currency),
-                                )
-                            dividend_events.append(div_event)
+                                if t.sum > 0:
+                                    # Positive = refund → negative tax withheld
+                                    div_event = DividendEvent(
+                                        date=tx_date,
+                                        symbol=symbol,
+                                        account_id=t.account_id,
+                                        gross_amount=Decimal("0"),
+                                        gross_amount_pln=Decimal("0"),
+                                        tax_withheld=-t.sum,
+                                        tax_withheld_pln=to_pln(-t.sum, nbp_rate),
+                                        currency=t.currency,
+                                        nbp_rate=nbp_rate,
+                                        comment=t.comment,
+                                        country=derive_country(symbol, currency=t.currency),
+                                    )
+                                else:
+                                    div_event = DividendEvent(
+                                        date=tx_date,
+                                        symbol=symbol,
+                                        account_id=t.account_id,
+                                        gross_amount=Decimal("0"),
+                                        gross_amount_pln=Decimal("0"),
+                                        tax_withheld=tax_amount,
+                                        tax_withheld_pln=tax_pln,
+                                        currency=t.currency,
+                                        nbp_rate=nbp_rate,
+                                        comment=t.comment,
+                                        country=derive_country(symbol, currency=t.currency),
+                                    )
+                                dividend_events.append(div_event)
                     else:
                         # Recalculation without symbol — US TAX by operation type
                         div_event = DividendEvent(
@@ -762,32 +792,88 @@ def _aggregate_by_year(
             (report.pit38_profit_loss * TAX_RATE).quantize(Decimal("1"), rounding=ROUND_HALF_UP),
         )
 
-        # Dividend events
+        # Dividend events — group by country, apply per-country UPO cap
+        # (art. 30a ust. 9 ustawy o PIT). Per-record quantize for grosze precision.
         year_div_events = div_by_year.get(year, [])
         report.dividend_events = year_div_events
 
+        by_country: dict[str, list[DividendEvent]] = {}
+        for e in year_div_events:
+            by_country.setdefault(e.country or "??", []).append(e)
+
+        per_country: dict[str, CountryDividend] = {}
+        total_to_deduct = Decimal("0")
+        total_due = Decimal("0")
+
+        # Tolerancja na zaokrąglenia kursów — gdy efektywna stawka WHT
+        # w walucie oryginalnej jest ≤ stawce UPO + tej tolerancji, traktujemy
+        # to jako "WHT pobrany na poziomie UPO" (np. USA 15% = UPO 15%) i nie
+        # cap-ujemy w PLN. Cap w PLN dawałby sztuczne straty groszowe
+        # wynikające wyłącznie z konwersji walutowych.
+        UPO_RATE_TOLERANCE = Decimal("0.001")  # 0.1 pp
+
+        for country, events in by_country.items():
+            c_income = sum((e.gross_amount_pln for e in events), Decimal("0"))
+            c_paid = sum((e.tax_withheld_pln for e in events), Decimal("0"))
+            c_due = sum(
+                (
+                    (e.gross_amount_pln * TAX_RATE).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+                    for e in events
+                ),
+                Decimal("0"),
+            )
+            c_cap = sum(
+                (
+                    (e.gross_amount_pln * upo_rate(country)).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+                    for e in events
+                ),
+                Decimal("0"),
+            )
+
+            # Sprawdź effektywną stawkę WHT w walucie oryginalnej
+            c_gross_orig = sum((e.gross_amount for e in events), Decimal("0"))
+            c_paid_orig = sum((e.tax_withheld for e in events), Decimal("0"))
+            country_upo = upo_rate(country)
+            if c_gross_orig > 0:
+                effective_rate = c_paid_orig / c_gross_orig
+            else:
+                effective_rate = Decimal("0")
+
+            if effective_rate <= country_upo + UPO_RATE_TOLERANCE:
+                # WHT pobrany ≤ stawka UPO → cały paid podlega odliczeniu
+                # (nie cap-ujemy artefaktów zaokrągleń w PLN)
+                c_to_deduct = min(c_paid, c_due)  # nadal max 19% PL
+            else:
+                # WHT > UPO (np. CA 25% > 15%) → cap do UPO w PLN
+                c_to_deduct = min(c_paid, c_cap)
+
+            per_country[country] = CountryDividend(
+                country=country,
+                income_pln=c_income,
+                tax_paid_pln=c_paid,
+                tax_due_pln=c_due,
+                tax_to_deduct_pln=c_to_deduct,
+                events=events,
+            )
+            total_to_deduct += c_to_deduct
+            total_due += c_due
+
         report.dividends_income_pln = sum(
-            e.gross_amount_pln for e in year_div_events
+            (e.gross_amount_pln for e in year_div_events), Decimal("0")
         )
         report.dividends_tax_paid_pln = sum(
-            e.tax_withheld_pln for e in year_div_events
+            (e.tax_withheld_pln for e in year_div_events), Decimal("0")
         )
-        # KROK 4: per-record quantize then sum (groszowa precyzja).
-        # Per-dywidenda: gross_amount_pln × 19% → quantize(0.01); reduces
-        # cumulative rounding error vs single sum-then-quantize. Aligns with
-        # XTB/mBank convention and per-row PIT-8C structure.
-        report.dividends_tax_due_pln = max(
-            Decimal("0"),
-            sum(
-                ((e.gross_amount_pln * TAX_RATE).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-                 for e in year_div_events),
-                Decimal("0"),
-            ),
-        )
+        report.dividends_tax_due_pln = max(Decimal("0"), total_due)
+        report.dividends_tax_to_deduct_pln = total_to_deduct
         report.dividends_tax_to_pay_pln = max(
-            Decimal("0"),
-            report.dividends_tax_due_pln - report.dividends_tax_paid_pln,
+            Decimal("0"), report.dividends_tax_due_pln - total_to_deduct
         )
+        report.dividends_by_country = per_country
 
         reports.append(report)
 

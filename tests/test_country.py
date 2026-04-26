@@ -107,3 +107,25 @@ class TestDividendEventCountry:
             country="US",
         )
         assert ev.country == "US"
+
+
+class TestUpoRate:
+    """UPO (treaty) rates per country — limit z art. 30a ust. 9."""
+
+    def test_us_is_15_percent(self):
+        from pit_exante.country import upo_rate
+        assert upo_rate("US") == Decimal("0.15")
+
+    def test_ca_is_15_percent(self):
+        from pit_exante.country import upo_rate
+        assert upo_rate("CA") == Decimal("0.15")
+
+    def test_se_is_15_percent(self):
+        from pit_exante.country import upo_rate
+        assert upo_rate("SE") == Decimal("0.15")
+
+    def test_unknown_country_falls_back_to_19_percent(self):
+        """Brak UPO → default = stawka krajowa 19% (limit nie ogranicza)."""
+        from pit_exante.country import upo_rate
+        assert upo_rate("??") == Decimal("0.19")
+        assert upo_rate("XX") == Decimal("0.19")

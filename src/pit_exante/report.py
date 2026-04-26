@@ -39,6 +39,16 @@ def _render_event_table(events: list[TaxEvent]) -> list[str]:
     return lines
 
 
+def _pit38_dividend_positions(year: int) -> tuple[int, int, int]:
+    """PIT-38 sekcja G — numeracja pól (due, do_odliczenia, do_zapłaty).
+
+    Numery pozycji zostały przesunięte o 2 w formularzu za 2025 r.
+    """
+    if year >= 2025:
+        return 47, 48, 49
+    return 45, 46, 47
+
+
 def generate_year_report(report: YearReport) -> str:
     """Generate text report for a single tax year — three PIT-38 sections."""
     lines: list[str] = []
@@ -122,58 +132,65 @@ def generate_year_report(report: YearReport) -> str:
     # ───────────────────────────────────────────────────────────────
     # SEKCJA 3: Dywidendy zagraniczne → PIT-38 sekcja G + PIT/ZG
     # ───────────────────────────────────────────────────────────────
+    # Numeracja pól w sekcji G zmieniła się od formularza za 2025 r. — przesunięcie o 2.
+    # 2020-2024: poz. 45 (due) / 46 (do odliczenia) / 47 (do zapłaty)
+    # 2025+:     poz. 47 / 48 / 49
+    pos_due, pos_deduct, pos_to_pay = _pit38_dividend_positions(report.year)
+
     lines.append("═" * 70)
     lines.append(f" Dywidendy zagraniczne — Rok {report.year}")
     lines.append(" → PIT-38 sekcja G + załącznik PIT/ZG")
     lines.append("═" * 70)
     lines.append("")
 
-    lines.append(f"DYWIDENDY BRUTTO:                               {_fmt(report.dividends_income_pln)} PLN")
-    lines.append(f"PODATEK POBRANY U ŹRÓDŁA:                       {_fmt(report.dividends_tax_paid_pln)} PLN")
-    lines.append(f"PODATEK POLSKI (19%):                           {_fmt(report.dividends_tax_due_pln)} PLN")
-    lines.append(f"DO ZAPŁATY W POLSCE:                            {_fmt(report.dividends_tax_to_pay_pln)} PLN")
+    lines.append(f"DYWIDENDY BRUTTO (do wyliczenia poz. {pos_due}):           {_fmt(report.dividends_income_pln)} PLN")
+    lines.append(f"PODATEK POBRANY U ŹRÓDŁA (informacyjnie):       {_fmt(report.dividends_tax_paid_pln)} PLN")
+    lines.append(f"PODATEK POLSKI 19%:                             {_fmt(report.dividends_tax_due_pln)} PLN  → poz. {pos_due}")
+    lines.append(f"PODATEK DO ODLICZENIA (per-UPO cap):            {_fmt(report.dividends_tax_to_deduct_pln)} PLN  → poz. {pos_deduct}")
+    lines.append(f"DO ZAPŁATY W POLSCE:                            {_fmt(report.dividends_tax_to_pay_pln)} PLN  → poz. {pos_to_pay}")
     lines.append("")
 
-    if report.dividend_events:
-        # Group dividends by country for PIT/ZG
+    if report.dividends_by_country:
         country_names = {"US": "USA", "CA": "Kanada", "SE": "Szwecja"}
-        by_country: dict[str, list[DividendEvent]] = {}
-        for e in report.dividend_events:
-            by_country.setdefault(e.country or "??", []).append(e)
 
-        for country_code in sorted(by_country):
-            events = by_country[country_code]
+        for country_code in sorted(report.dividends_by_country):
+            cd = report.dividends_by_country[country_code]
             country_name = country_names.get(country_code, country_code)
-
-            c_gross = sum(e.gross_amount_pln for e in events)
-            c_tax_paid = sum(e.tax_withheld_pln for e in events)
-            c_tax_due = max(Decimal("0"), (c_gross * TAX_RATE).quantize(Decimal("0.01")))
-            c_to_pay = max(Decimal("0"), c_tax_due - c_tax_paid)
+            events = cd.events
+            c_to_pay = max(Decimal("0"), cd.tax_due_pln - cd.tax_to_deduct_pln)
 
             lines.append(f"Kraj: {country_name} ({country_code})")
-            lines.append(f"  Brutto: {_fmt(c_gross)} PLN | Podatek źródło: {_fmt(c_tax_paid)} PLN | "
-                         f"Podatek PL 19%: {_fmt(c_tax_due)} PLN | Do zapłaty: {_fmt(c_to_pay)} PLN")
+            lines.append(
+                f"  Brutto: {_fmt(cd.income_pln)} PLN | Podatek źródło: {_fmt(cd.tax_paid_pln)} PLN | "
+                f"Podatek PL 19%: {_fmt(cd.tax_due_pln)} PLN | "
+                f"Do odliczenia: {_fmt(cd.tax_to_deduct_pln)} PLN | "
+                f"Do zapłaty: {_fmt(c_to_pay)} PLN"
+            )
             lines.append("")
-            lines.append("─" * 110)
+            lines.append("─" * 126)
             lines.append(
                 f"{'Data':<12}{'Instrument':<16}{'Brutto':>10} {'Wal':>4}"
-                f"{'Brutto PLN':>14}{'Podatek źródło':>16}{'Podatek PL 19%':>16}{'Do zapłaty':>14}"
+                f"{'Brutto PLN':>14}{'Podatek źródło':>16}{'Podatek PL 19%':>16}"
+                f"{'Cap UPO':>14}{'Do odliczenia':>16}"
             )
-            lines.append("─" * 110)
+            lines.append("─" * 126)
 
             for e in sorted(events, key=lambda x: x.date):
+                from .country import upo_rate as _upo
                 tax_pl = max(Decimal("0"), (e.gross_amount_pln * TAX_RATE).quantize(Decimal("0.01")))
-                to_pay = max(Decimal("0"), tax_pl - e.tax_withheld_pln)
+                cap = (e.gross_amount_pln * _upo(country_code)).quantize(Decimal("0.01"))
+                deduct = min(e.tax_withheld_pln, cap)
                 lines.append(
                     f"{e.date.isoformat():<12}{e.symbol:<16}"
                     f"{e.gross_amount:>10.2f} {e.currency:>4}"
                     f"{_fmt(e.gross_amount_pln, 14)}"
                     f"{_fmt(e.tax_withheld_pln, 16)}"
                     f"{_fmt(tax_pl, 16)}"
-                    f"{_fmt(to_pay, 14)}"
+                    f"{_fmt(cap, 14)}"
+                    f"{_fmt(deduct, 16)}"
                 )
 
-            lines.append("─" * 110)
+            lines.append("─" * 126)
             lines.append("")
     lines.append("")
 

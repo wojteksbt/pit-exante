@@ -138,6 +138,22 @@ class DividendEvent:
 
 
 @dataclass
+class CountryDividend:
+    """Per-country aggregate for dividend tax (art. 30a ust. 9 ustawy o PIT).
+
+    tax_to_deduct_pln = min(tax_paid_pln, upo_rate(country) × income_pln)
+    — czyli "podatek do odliczenia" zgodnie z limitem UPO.
+    """
+
+    country: str
+    income_pln: Decimal = Decimal("0")
+    tax_paid_pln: Decimal = Decimal("0")  # WHT faktycznie zapłacony za granicą
+    tax_due_pln: Decimal = Decimal("0")  # 19% × income (per-record quantize)
+    tax_to_deduct_pln: Decimal = Decimal("0")  # min(tax_paid, upo_rate × income)
+    events: list[DividendEvent] = field(default_factory=list)
+
+
+@dataclass
 class YearReport:
     year: int
     # PIT-38 — total (= papiery + pochodne, kept for backward compat)
@@ -154,9 +170,11 @@ class YearReport:
     pochodne_income: Decimal = Decimal("0")
     pochodne_cost: Decimal = Decimal("0")
     pochodne_events: list[TaxEvent] = field(default_factory=list)
-    # PIT-36 / PIT-ZG
-    dividends_income_pln: Decimal = Decimal("0")
-    dividends_tax_paid_pln: Decimal = Decimal("0")
-    dividends_tax_due_pln: Decimal = Decimal("0")
-    dividends_tax_to_pay_pln: Decimal = Decimal("0")
+    # PIT-38 sekcja G + PIT/ZG — dywidendy zagraniczne
+    dividends_income_pln: Decimal = Decimal("0")  # poz. 45 input — dywidendy brutto
+    dividends_tax_paid_pln: Decimal = Decimal("0")  # WHT zapłacony za granicą (informacyjnie)
+    dividends_tax_due_pln: Decimal = Decimal("0")  # poz. 45 — podatek PL (19%)
+    dividends_tax_to_deduct_pln: Decimal = Decimal("0")  # poz. 46 — po limicie UPO per-country
+    dividends_tax_to_pay_pln: Decimal = Decimal("0")  # poz. 47 — do dopłaty
     dividend_events: list[DividendEvent] = field(default_factory=list)
+    dividends_by_country: dict[str, CountryDividend] = field(default_factory=dict)
