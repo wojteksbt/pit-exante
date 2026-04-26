@@ -14,6 +14,17 @@ _NBP_API = "https://api.nbp.pl/api/exchangerates/rates/a/{currency}/{date}/?form
 
 _CACHE_PATH = Path(__file__).parent.parent.parent / "data" / "nbp_cache.json"
 
+# NBP table A archive starts 2002-01-02. Earlier dates have no published mid-rate.
+_NBP_ARCHIVE_START_YEAR = 2002
+
+# How many days back to walk on 404 (weekend/holiday). Margin for hypothetical
+# 6+-day closure if Sejm legislates further holidays.
+_MAX_FALLBACK_DAYS = 7
+
+# Currencies for which NBP publishes table A mid-rates and the calculator supports.
+# PLN is handled by an early-return in get_rate (rate=1, no API call).
+_VALID_NBP_CURRENCIES = frozenset({"USD", "EUR", "CAD", "SEK"})
+
 _cache: dict[str, str] = {}
 _cache_loaded: bool = False
 _cache_dirty: bool = False
@@ -36,70 +47,13 @@ def _save_cache() -> None:
         json.dump(_cache, f, indent=2, sort_keys=True)
 
 
-def _easter(year: int) -> date:
-    """Calculate Easter Sunday using the Anonymous Gregorian algorithm."""
-    a = year % 19
-    b, c = divmod(year, 100)
-    d, e = divmod(b, 4)
-    f = (b + 8) // 25
-    g = (b - f + 1) // 3
-    h = (19 * a + b - d - g + 15) % 30
-    i, k = divmod(c, 4)
-    l = (32 + 2 * e + 2 * i - h - k) % 7
-    m = (a + 11 * h + 22 * l) // 451
-    month, day = divmod(h + l - 7 * m + 114, 31)
-    return date(year, month, day + 1)
-
-
-def _polish_holidays(year: int) -> set[date]:
-    """Return set of Polish public holidays for a given year."""
-    easter_sun = _easter(year)
-    easter_mon = easter_sun + timedelta(days=1)
-    corpus_christi = easter_sun + timedelta(days=60)
-
-    return {
-        date(year, 1, 1),    # Nowy Rok
-        date(year, 1, 6),    # Trzech Króli
-        easter_sun,
-        easter_mon,
-        date(year, 5, 1),    # Święto Pracy
-        date(year, 5, 3),    # Konstytucja 3 Maja
-        corpus_christi,
-        date(year, 8, 15),   # Wniebowzięcie NMP
-        date(year, 11, 1),   # Wszystkich Świętych
-        date(year, 11, 11),  # Niepodległości
-        date(year, 12, 25),  # Boże Narodzenie
-        date(year, 12, 26),  # Drugi dzień BN
-    }
-
-
-# Pre-compute holidays for relevant years
-_holidays_cache: dict[int, set[date]] = {}
-
-
-def _is_business_day(d: date) -> bool:
-    """Check if date is a Polish business day."""
-    if d.weekday() >= 5:  # Saturday or Sunday
-        return False
-    if d.year not in _holidays_cache:
-        _holidays_cache[d.year] = _polish_holidays(d.year)
-    return d not in _holidays_cache[d.year]
-
-
-def _previous_business_day(d: date) -> date:
-    """Find the last business day strictly before the given date.
-
-    Per art. 11a ust. 1-2 ustawy o PIT: average NBP rate from the last
-    business day preceding the transaction date.
-    """
-    d = d - timedelta(days=1)
-    while not _is_business_day(d):
-        d = d - timedelta(days=1)
-    return d
-
-
 def _fetch_from_api(currency: str, d: date) -> Decimal | None:
-    """Fetch rate from NBP API. Returns None if not found (404)."""
+    """Fetch rate from NBP API. Returns None on 404 (no publication that day).
+
+    Raises RuntimeError if NBP returns a rate for a different date or currency
+    than requested (defensive — guards against silent corruption if NBP API
+    ever changes behavior).
+    """
     global _last_request_time
 
     # Rate limiting: max 1 req/s
@@ -132,34 +86,62 @@ def _fetch_from_api(currency: str, d: date) -> Decimal | None:
 
 
 def get_rate(currency: str, transaction_date: date) -> Decimal:
-    """Get NBP exchange rate for the last business day before transaction_date.
+    """Get NBP table A mid-rate for the last published day before transaction_date.
 
-    Returns Decimal(1) for PLN transactions.
+    Per art. 11a ust. 1-2 ustawy o PIT: średni kurs NBP z ostatniego dnia
+    roboczego poprzedzającego dzień transakcji. NBP API is the authority for
+    which dates have a published rate — 404 means no publication that day
+    (weekend/holiday) and we walk back up to 7 days.
+
+    Returns Decimal(1) for PLN. Pre-2002 dates raise immediately.
     """
-    if currency.upper() == "PLN":
+    cur = currency.upper()
+    if cur == "PLN":
         return Decimal("1")
+    if cur not in _VALID_NBP_CURRENCIES:
+        raise ValueError(
+            f"Unsupported currency {currency!r}; "
+            f"expected one of {sorted(_VALID_NBP_CURRENCIES)} or PLN"
+        )
 
     _load_cache()
 
-    lookup_date = _previous_business_day(transaction_date)
+    # Cache key = deterministic "transaction_date - 1 calendar day", independent
+    # of which actual date NBP published on. Subsequent runs hit immediately
+    # without re-walking the 404 chain. Legacy entries (keyed by previous
+    # _previous_business_day convention) are picked up via the step-key check
+    # below and back-filled into primary_key.
+    primary_key = f"{cur}_{(transaction_date - timedelta(days=1)).isoformat()}"
+    if primary_key in _cache:
+        return Decimal(_cache[primary_key])
 
-    # Try cache first
-    cache_key = f"{currency.upper()}_{lookup_date.isoformat()}"
-    if cache_key in _cache:
-        return Decimal(_cache[cache_key])
-
-    # Fetch from API, retrying with earlier dates if 404
     global _cache_dirty
-    d = lookup_date
-    for _ in range(5):  # max 5 retries
-        rate = _fetch_from_api(currency, d)
+    d = transaction_date - timedelta(days=1)
+    for i in range(_MAX_FALLBACK_DAYS):
+        if d.year < _NBP_ARCHIVE_START_YEAR:
+            raise RuntimeError(
+                f"Date {d} before NBP archive (started {_NBP_ARCHIVE_START_YEAR})"
+            )
+        # On fallback steps, check legacy cache entries before hitting API.
+        # First iteration (i=0) is already covered by primary_key check above.
+        if i > 0:
+            step_key = f"{cur}_{d.isoformat()}"
+            if step_key in _cache:
+                rate = Decimal(_cache[step_key])
+                _cache[primary_key] = str(rate)
+                _cache_dirty = True
+                return rate
+        rate = _fetch_from_api(cur, d)
         if rate is not None:
-            _cache[cache_key] = str(rate)
+            _cache[primary_key] = str(rate)
             _cache_dirty = True
             return rate
-        d = _previous_business_day(d)
+        d -= timedelta(days=1)
 
-    raise RuntimeError(f"Could not fetch NBP rate for {currency} around {transaction_date}")
+    raise RuntimeError(
+        f"No NBP rate within {_MAX_FALLBACK_DAYS} days back from "
+        f"{transaction_date} for {currency}"
+    )
 
 
 def save_cache_if_dirty() -> None:

@@ -1,117 +1,37 @@
 """Tests for NBP exchange rate module."""
 
-import io
 import json
 import pytest
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from pit_exante import nbp
 from pit_exante.nbp import (
     get_rate,
-    _previous_business_day,
-    _is_business_day,
-    _easter,
-    _polish_holidays,
     _fetch_from_api,
+    _VALID_NBP_CURRENCIES,
 )
 
 
-class TestEaster:
-    """Verify Easter calculation against known dates."""
-
-    @pytest.mark.parametrize("year,expected", [
-        (2020, date(2020, 4, 12)),
-        (2021, date(2021, 4, 4)),
-        (2022, date(2022, 4, 17)),
-        (2023, date(2023, 4, 9)),
-        (2024, date(2024, 3, 31)),
-        (2025, date(2025, 4, 20)),
-    ])
-    def test_easter_dates(self, year, expected):
-        assert _easter(year) == expected
+def _mock_response(body: dict):
+    class _Resp:
+        def __enter__(self_inner):
+            return self_inner
+        def __exit__(self_inner, *args):
+            return False
+        def read(self_inner):
+            return json.dumps(body).encode()
+    return _Resp()
 
 
-class TestPolishHolidays:
-    def test_fixed_holidays_2024(self):
-        holidays = _polish_holidays(2024)
-        assert date(2024, 1, 1) in holidays   # Nowy Rok
-        assert date(2024, 1, 6) in holidays   # Trzech Króli
-        assert date(2024, 5, 1) in holidays   # Święto Pracy
-        assert date(2024, 5, 3) in holidays   # Konstytucja
-        assert date(2024, 8, 15) in holidays  # Wniebowzięcie NMP
-        assert date(2024, 11, 1) in holidays  # Wszystkich Świętych
-        assert date(2024, 11, 11) in holidays # Niepodległości
-        assert date(2024, 12, 25) in holidays # Boże Narodzenie
-        assert date(2024, 12, 26) in holidays # Drugi dzień BN
-
-    def test_easter_dependent_holidays_2024(self):
-        holidays = _polish_holidays(2024)
-        # Easter 2024 = March 31
-        assert date(2024, 3, 31) in holidays  # Wielkanoc
-        assert date(2024, 4, 1) in holidays   # Poniedziałek Wielkanocny
-        assert date(2024, 5, 30) in holidays  # Boże Ciało (Easter + 60)
-
-    def test_good_friday_not_holiday(self):
-        # Poland does NOT observe Good Friday
-        holidays = _polish_holidays(2020)
-        # Easter 2020 = April 12, Good Friday = April 10
-        assert date(2020, 4, 10) not in holidays
-
-    def test_count(self):
-        holidays = _polish_holidays(2024)
-        assert len(holidays) == 12
-
-
-class TestIsBusinessDay:
-    def test_weekday_is_business(self):
-        assert _is_business_day(date(2024, 3, 18)) is True  # Monday
-
-    def test_saturday_not_business(self):
-        assert _is_business_day(date(2024, 3, 16)) is False
-
-    def test_sunday_not_business(self):
-        assert _is_business_day(date(2024, 3, 17)) is False
-
-    def test_new_year_not_business(self):
-        assert _is_business_day(date(2024, 1, 1)) is False
-
-    def test_easter_monday_not_business(self):
-        assert _is_business_day(date(2024, 4, 1)) is False
-
-    def test_good_friday_is_business(self):
-        # Good Friday 2024 = March 29
-        assert _is_business_day(date(2024, 3, 29)) is True
-
-
-class TestPreviousBusinessDay:
-    def test_monday_goes_to_friday(self):
-        assert _previous_business_day(date(2024, 3, 18)) == date(2024, 3, 15)
-
-    def test_tuesday_goes_to_monday(self):
-        assert _previous_business_day(date(2024, 3, 19)) == date(2024, 3, 18)
-
-    def test_skips_weekend(self):
-        # Sunday → Friday
-        assert _previous_business_day(date(2024, 3, 17)) == date(2024, 3, 15)
-
-    def test_skips_easter_weekend(self):
-        # Easter 2020 = April 12 (Sun), Easter Mon = April 13
-        # Before April 14 (Tue) → April 10 (Fri, Good Friday is business day in PL)
-        assert _previous_business_day(date(2020, 4, 14)) == date(2020, 4, 10)
-
-    def test_skips_new_year(self):
-        # Before Jan 2, 2020 (Thu) → Dec 31, 2019 (Tue)
-        assert _previous_business_day(date(2020, 1, 2)) == date(2019, 12, 31)
-
-    def test_skips_may_holidays(self):
-        # May 1+3 are holidays in 2020; May 4 is Mon
-        # Before May 4 → April 30 (Thu)
-        assert _previous_business_day(date(2020, 5, 4)) == date(2020, 4, 30)
+def _http_error(code: int) -> HTTPError:
+    return HTTPError("http://test", code, "test", {}, None)
 
 
 class TestGetRate:
@@ -147,24 +67,12 @@ class TestGetRate:
 class TestFetchValidation:
     """Defensive validation that NBP response matches the request."""
 
-    def _mock_response(self, body: dict):
-        class _Resp:
-            def __enter__(self_inner):
-                return self_inner
-            def __exit__(self_inner, *args):
-                return False
-            def read(self_inner):
-                return json.dumps(body).encode()
-        return _Resp()
-
     def test_effective_date_mismatch_raises(self):
-        # NBP would never do this today, but if it ever returns "nearest available"
-        # silently, we must fail-fast rather than poison the cache.
         body = {
             "code": "USD",
             "rates": [{"effectiveDate": "2024-12-23", "mid": "4.1234"}],
         }
-        with patch("pit_exante.nbp.urlopen", return_value=self._mock_response(body)):
+        with patch("pit_exante.nbp.urlopen", return_value=_mock_response(body)):
             with pytest.raises(RuntimeError, match="NBP returned rate for 2024-12-23"):
                 _fetch_from_api("USD", date(2024, 12, 24))
 
@@ -173,7 +81,7 @@ class TestFetchValidation:
             "code": "EUR",  # asked USD
             "rates": [{"effectiveDate": "2024-12-23", "mid": "4.1234"}],
         }
-        with patch("pit_exante.nbp.urlopen", return_value=self._mock_response(body)):
+        with patch("pit_exante.nbp.urlopen", return_value=_mock_response(body)):
             with pytest.raises(RuntimeError, match="Currency mismatch"):
                 _fetch_from_api("USD", date(2024, 12, 23))
 
@@ -182,6 +90,85 @@ class TestFetchValidation:
             "code": "USD",
             "rates": [{"effectiveDate": "2024-12-23", "mid": "4.0000"}],
         }
-        with patch("pit_exante.nbp.urlopen", return_value=self._mock_response(body)):
+        with patch("pit_exante.nbp.urlopen", return_value=_mock_response(body)):
             rate = _fetch_from_api("USD", date(2024, 12, 23))
             assert rate == Decimal("4.0000")
+
+
+class TestL5Refactor:
+    """L5: NBP API as authority — no holiday calendar, retry on 404."""
+
+    def test_invalid_currency_raises(self):
+        with pytest.raises(ValueError, match="Unsupported currency"):
+            get_rate("XXX", date(2024, 1, 15))
+
+    def test_lowercase_invalid_currency_raises(self):
+        # Validation happens after .upper(), so 'jpy' should fail same as 'JPY'
+        with pytest.raises(ValueError, match="Unsupported currency"):
+            get_rate("jpy", date(2024, 1, 15))
+
+    def test_pre_archive_date_raises(self):
+        # NBP table A archive starts 2002. Any earlier date should raise
+        # before any API call is attempted.
+        with patch("pit_exante.nbp.urlopen") as mock_url:
+            with pytest.raises(RuntimeError, match="before NBP archive"):
+                get_rate("USD", date(1990, 1, 1))
+            mock_url.assert_not_called()
+
+    def test_holiday_fallback_walks_back(self):
+        # Simulate Wigilia 2025 (24.12.2025): NBP closed → 404 → walk back to 23.12.
+        # Use date(2025, 12, 26) so initial d=2025-12-25 (BN 404) → 2025-12-24 (Wigilia 404)
+        # → 2025-12-23 (success). Bypass cache via fresh state.
+        original_cache = nbp._cache
+        original_loaded = nbp._cache_loaded
+        try:
+            nbp._cache = {}
+            nbp._cache_loaded = True  # skip _load_cache disk read
+
+            calls = []
+
+            def fake_urlopen(req, timeout=10):
+                # Extract date from URL to decide response
+                url = req.full_url if hasattr(req, "full_url") else req.get_full_url()
+                calls.append(url)
+                if "2025-12-23" in url:
+                    return _mock_response({
+                        "code": "USD",
+                        "rates": [{"effectiveDate": "2025-12-23", "mid": "3.5848"}],
+                    })
+                # 404 for 24.12, 25.12, 26.12 (holidays/Wigilia)
+                raise _http_error(404)
+
+            with patch("pit_exante.nbp.urlopen", side_effect=fake_urlopen):
+                with patch("pit_exante.nbp.time.sleep"):  # skip rate-limit sleep
+                    rate = get_rate("USD", date(2025, 12, 26))
+                    assert rate == Decimal("3.5848")
+                    # 3 attempts: 25, 24, 23
+                    assert len(calls) == 3
+        finally:
+            nbp._cache = original_cache
+            nbp._cache_loaded = original_loaded
+
+    def test_max_fallback_exceeded_raises(self):
+        # All 7 attempts return 404 → RuntimeError with date range
+        original_cache = nbp._cache
+        original_loaded = nbp._cache_loaded
+        try:
+            nbp._cache = {}
+            nbp._cache_loaded = True
+
+            def always_404(req, timeout=10):
+                raise _http_error(404)
+
+            with patch("pit_exante.nbp.urlopen", side_effect=always_404):
+                with patch("pit_exante.nbp.time.sleep"):
+                    with pytest.raises(RuntimeError, match="No NBP rate within"):
+                        get_rate("USD", date(2024, 6, 15))
+        finally:
+            nbp._cache = original_cache
+            nbp._cache_loaded = original_loaded
+
+    def test_valid_currencies_set(self):
+        # Document the currency contract — if this changes, calculator may
+        # need updates for handling new currencies.
+        assert _VALID_NBP_CURRENCIES == frozenset({"USD", "EUR", "CAD", "SEK"})
