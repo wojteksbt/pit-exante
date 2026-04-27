@@ -9,19 +9,57 @@ from pathlib import Path
 
 from .models import BARE_CURRENCIES, Transaction
 
-# Exchange suffixes → settlement currency
+# Last-resort suffix fallback for symbol-leg rows that have no TRADE cash leg
+# in the dataset (none in current data). Only trust mono-currency exchanges.
+# .TMX intentionally excluded — Toronto lists both CAD-class (LUN, U.UN) and
+# USD-class (U/U, BTCQ.U) instruments; the cash-leg map is authoritative.
 _EXCHANGE_CURRENCY: dict[str, str] = {
     ".NYSE": "USD",
     ".NASDAQ": "USD",
     ".ARCA": "USD",
     ".BATS": "USD",
-    ".TMX": "CAD",
     ".SOMX": "SEK",
 }
 
 
-def _derive_currency(asset: str, symbol_id: str | None) -> str:
-    """Derive settlement currency from asset string."""
+def _build_orderid_currency_map(raw: list[dict]) -> dict[str, str]:
+    """Map orderId → settlement currency, derived from TRADE cash legs.
+
+    Each TRADE order in Exante has paired rows with the same orderId: the
+    instrument leg (asset = symbolId) and the cash leg (asset is a bare
+    currency). The cash leg's asset is the empirical settlement currency.
+
+    AUTOCONVERSION rows (broker-internal forex bridging EUR↔USD↔CAD↔SEK
+    around the trade) share the same orderId but are NOT the settlement
+    currency, so we filter to operationType == "TRADE" only.
+    """
+    mapping: dict[str, str] = {}
+    for r in raw:
+        if r.get("operationType") != "TRADE":
+            continue
+        oid = r.get("orderId")
+        asset = r.get("asset")
+        if oid and asset in BARE_CURRENCIES:
+            mapping[oid] = asset
+    return mapping
+
+
+def _derive_currency(
+    asset: str,
+    symbol_id: str | None,
+    orderid_currency_map: dict[str, str] | None = None,
+    order_id: str | None = None,
+) -> str:
+    """Derive settlement currency.
+
+    Hierarchy:
+    1. asset is itself a bare currency → asset (e.g. DIVIDEND in USD)
+    2. asset is forex pair (.FX) → quote currency
+    3. order_id is in cash-leg map → that currency (primary truth)
+    4. asset's exchange suffix → suffix table fallback
+    5. symbol_id's exchange suffix → suffix table fallback
+    6. default "USD"
+    """
     if asset in BARE_CURRENCIES:
         return asset
 
@@ -32,6 +70,10 @@ def _derive_currency(asset: str, symbol_id: str | None) -> str:
         if len(parts) == 2:
             return parts[1].split(".")[0]
         return "USD"
+
+    # Primary: cash leg of the same TRADE order
+    if orderid_currency_map and order_id and order_id in orderid_currency_map:
+        return orderid_currency_map[order_id]
 
     for suffix, currency in _EXCHANGE_CURRENCY.items():
         if asset.endswith(suffix):
@@ -60,11 +102,14 @@ def parse_transactions(path: str | Path) -> list[Transaction]:
     with open(path) as f:
         raw = json.load(f)
 
+    orderid_currency_map = _build_orderid_currency_map(raw)
+
     transactions: list[Transaction] = []
     for r in raw:
         asset = r["asset"]
         symbol_id = r.get("symbolId")
-        currency = _derive_currency(asset, symbol_id)
+        order_id = r.get("orderId")
+        currency = _derive_currency(asset, symbol_id, orderid_currency_map, order_id)
 
         t = Transaction(
             uuid=r["uuid"],
