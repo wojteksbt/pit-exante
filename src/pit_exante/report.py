@@ -229,7 +229,12 @@ def generate_csv(
     reports: list[YearReport],
     output_path: str | Path,
 ) -> None:
-    """Generate CSV with all tax events across all years."""
+    """Generate CSV with all tax events across all years.
+
+    Schema overload: dividend rows reuse trade columns. For Typ="dividend",
+    "Przychód oryg./PLN" = gross dividend, "Koszt oryg./PLN" = withholding
+    tax (NOT a cost). Filter by Typ before summing cost columns.
+    """
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([

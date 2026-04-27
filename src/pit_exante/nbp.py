@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import socket
 import time
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 _NBP_API = "https://api.nbp.pl/api/exchangerates/rates/a/{currency}/{date}/?format=json"
@@ -20,6 +21,10 @@ _NBP_ARCHIVE_START_YEAR = 2002
 # How many days back to walk on 404 (weekend/holiday). Margin for hypothetical
 # 6+-day closure if Sejm legislates further holidays.
 _MAX_FALLBACK_DAYS = 7
+
+# Backoff delays for transient NBP failures (5xx, network timeout). 4xx is NOT
+# retried — 404 is a real signal of "no publication that day".
+_RETRY_DELAYS_S = (1, 2, 4)
 
 # Currencies for which NBP publishes table A mid-rates and the calculator supports.
 # PLN is handled by an early-return in get_rate (rate=1, no API call).
@@ -52,7 +57,8 @@ def _fetch_from_api(currency: str, d: date) -> Decimal | None:
 
     Raises RuntimeError if NBP returns a rate for a different date or currency
     than requested (defensive — guards against silent corruption if NBP API
-    ever changes behavior).
+    ever changes behavior). Transient failures (5xx, network timeout) retry
+    with exponential backoff per _RETRY_DELAYS_S; 4xx propagates immediately.
     """
     global _last_request_time
 
@@ -64,25 +70,40 @@ def _fetch_from_api(currency: str, d: date) -> Decimal | None:
     url = _NBP_API.format(currency=currency.upper(), date=d.isoformat())
     req = Request(url, headers={"Accept": "application/json", "User-Agent": "pit-exante/1.0"})
 
-    try:
-        _last_request_time = time.time()
-        with urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-            rate_entry = data["rates"][0]
-            if rate_entry["effectiveDate"] != d.isoformat():
-                raise RuntimeError(
-                    f"NBP returned rate for {rate_entry['effectiveDate']}, "
-                    f"asked {d.isoformat()} ({currency})"
-                )
-            if data.get("code", "").upper() != currency.upper():
-                raise RuntimeError(
-                    f"Currency mismatch: asked {currency}, got {data.get('code')}"
-                )
-            return Decimal(str(rate_entry["mid"]))
-    except HTTPError as e:
-        if e.code == 404:
-            return None
-        raise
+    last_err: Exception | None = None
+    for attempt_index, backoff in enumerate((0,) + _RETRY_DELAYS_S):
+        if backoff:
+            time.sleep(backoff)
+        try:
+            _last_request_time = time.time()
+            with urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+                rate_entry = data["rates"][0]
+                if rate_entry["effectiveDate"] != d.isoformat():
+                    raise RuntimeError(
+                        f"NBP returned rate for {rate_entry['effectiveDate']}, "
+                        f"asked {d.isoformat()} ({currency})"
+                    )
+                if data.get("code", "").upper() != currency.upper():
+                    raise RuntimeError(
+                        f"Currency mismatch: asked {currency}, got {data.get('code')}"
+                    )
+                return Decimal(str(rate_entry["mid"]))
+        except HTTPError as e:
+            if e.code == 404:
+                return None
+            if 500 <= e.code < 600:
+                last_err = e
+                continue
+            raise
+        except (URLError, socket.timeout) as e:
+            last_err = e
+            continue
+
+    raise RuntimeError(
+        f"NBP API failed after {len(_RETRY_DELAYS_S) + 1} attempts "
+        f"for {currency} {d.isoformat()}: {last_err}"
+    )
 
 
 def get_rate(currency: str, transaction_date: date) -> Decimal:

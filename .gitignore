@@ -15,3 +15,5 @@ __pycache__/
 docs/internal/
 tests/personal/
 .personal-amounts
+Plans/
+MEMORY/

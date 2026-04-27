@@ -1,12 +1,13 @@
 """Tests for NBP exchange rate module."""
 
 import json
+import socket
 import pytest
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
@@ -15,6 +16,7 @@ from pit_exante import nbp
 from pit_exante.nbp import (
     get_rate,
     _fetch_from_api,
+    _RETRY_DELAYS_S,
     _VALID_NBP_CURRENCIES,
 )
 
@@ -172,3 +174,105 @@ class TestL5Refactor:
         # Document the currency contract — if this changes, calculator may
         # need updates for handling new currencies.
         assert _VALID_NBP_CURRENCIES == frozenset({"USD", "EUR", "CAD", "SEK"})
+
+
+class TestN3RetryBackoff:
+    """N3: exponential backoff on 5xx/timeout, no retry on 4xx."""
+
+    def test_5xx_retries_then_succeeds(self):
+        body = {
+            "code": "USD",
+            "rates": [{"effectiveDate": "2024-12-23", "mid": "4.0000"}],
+        }
+        calls = {"n": 0}
+
+        def fake_urlopen(req, timeout=10):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _http_error(503)
+            return _mock_response(body)
+
+        with patch("pit_exante.nbp.urlopen", side_effect=fake_urlopen):
+            with patch("pit_exante.nbp.time.sleep"):
+                rate = _fetch_from_api("USD", date(2024, 12, 23))
+                assert rate == Decimal("4.0000")
+                assert calls["n"] == 2
+
+    def test_5xx_exhausts_retries_raises(self):
+        def always_503(req, timeout=10):
+            raise _http_error(503)
+
+        with patch("pit_exante.nbp.urlopen", side_effect=always_503):
+            with patch("pit_exante.nbp.time.sleep"):
+                with pytest.raises(RuntimeError, match="NBP API failed after"):
+                    _fetch_from_api("USD", date(2024, 12, 23))
+
+    def test_timeout_retries_then_succeeds(self):
+        body = {
+            "code": "USD",
+            "rates": [{"effectiveDate": "2024-12-23", "mid": "4.0000"}],
+        }
+        calls = {"n": 0}
+
+        def fake_urlopen(req, timeout=10):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise socket.timeout("timed out")
+            return _mock_response(body)
+
+        with patch("pit_exante.nbp.urlopen", side_effect=fake_urlopen):
+            with patch("pit_exante.nbp.time.sleep"):
+                rate = _fetch_from_api("USD", date(2024, 12, 23))
+                assert rate == Decimal("4.0000")
+                assert calls["n"] == 2
+
+    def test_urlerror_retries_then_succeeds(self):
+        body = {
+            "code": "USD",
+            "rates": [{"effectiveDate": "2024-12-23", "mid": "4.0000"}],
+        }
+        calls = {"n": 0}
+
+        def fake_urlopen(req, timeout=10):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise URLError("Connection refused")
+            return _mock_response(body)
+
+        with patch("pit_exante.nbp.urlopen", side_effect=fake_urlopen):
+            with patch("pit_exante.nbp.time.sleep"):
+                rate = _fetch_from_api("USD", date(2024, 12, 23))
+                assert rate == Decimal("4.0000")
+                assert calls["n"] == 2
+
+    def test_4xx_does_not_retry(self):
+        # Non-404 4xx (e.g., 401/429) propagates immediately, no retries.
+        calls = {"n": 0}
+
+        def fake_urlopen(req, timeout=10):
+            calls["n"] += 1
+            raise _http_error(401)
+
+        with patch("pit_exante.nbp.urlopen", side_effect=fake_urlopen):
+            with patch("pit_exante.nbp.time.sleep"):
+                with pytest.raises(HTTPError):
+                    _fetch_from_api("USD", date(2024, 12, 23))
+                assert calls["n"] == 1
+
+    def test_404_returns_none_no_retry(self):
+        # 404 is a real signal — no retry, return None.
+        calls = {"n": 0}
+
+        def fake_urlopen(req, timeout=10):
+            calls["n"] += 1
+            raise _http_error(404)
+
+        with patch("pit_exante.nbp.urlopen", side_effect=fake_urlopen):
+            with patch("pit_exante.nbp.time.sleep"):
+                result = _fetch_from_api("USD", date(2024, 12, 23))
+                assert result is None
+                assert calls["n"] == 1
+
+    def test_retry_delays_exponential(self):
+        # Document the delay schedule (1s/2s/4s).
+        assert _RETRY_DELAYS_S == (1, 2, 4)

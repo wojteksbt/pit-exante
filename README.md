@@ -121,9 +121,29 @@ FIFO działa osobno per `(rachunek, instrument)` z normalizacją subkont do kont
 
 ## Znane ograniczenia
 
+### Zakres geograficzny i walutowy
+
+- **Wspierane giełdy:** NYSE, NASDAQ, ARCA, BATS (USA), TMX (Kanada), SOMX (Szwecja). Inwestycja na innej giełdzie (XETRA, LSE, SWX, EURONEXT, ASX itd.) → fail-fast `UnknownCountryError` z prośbą o dodanie wpisu do `_EXCHANGE_COUNTRY` w `country.py` razem ze stawką UPO.
+- **Wspierane waluty:** USD, EUR, CAD, SEK (+ PLN). Inna waluta → fail-fast w `nbp.py`. Dodanie nowej wymaga rozszerzenia `BARE_CURRENCIES` i `_VALID_NBP_CURRENCIES`.
+
+### Metodologia podatkowa
+
+- **Limit z art. 30a ust. 9 (dywidendy) liczony per-UPO 15% × brutto** ("interpretacja B", zgodna z linią KIS i praktyką biur typu PitFx). Alternatywna interpretacja A (cap = 19% × brutto) jest poparta wyrokiem NSA II FSK 1171/22 (28.02.2023) i niektórzy doradcy ją stosują — w obecnej implementacji nie jest dostępna jako tryb. Skala różnicy: dla 2024 r. rzędu ~6 PLN, dla portfeli z większą ekspozycją na kraje pobierające > 15% u źródła (Kanada bez NR301) może rosnąć liniowo.
+- **Autoconversion (EUR↔USD u brokera)** jest pomijana jako zdarzenie podatkowe — art. 24c dotyczy działalności gospodarczej. Komercyjne biura (np. PitFx) traktują ją jako zdarzenie kapitałowe. Skutek: nasz dochód kapitałowy może być nieco niższy/wyższy vs raport biura (rząd kilkudziesięciu PLN/rok dla typowej aktywności).
+- **Rounding:** każda pozycja PLN kwantowana do 1 grosza (`ROUND_HALF_UP`) na poziomie zdarzenia. Tolerancja UPO cap: 0,1pp. Końcowe sumy w `pit_YYYY.txt` mogą różnić się od raportu biura o pojedyncze grosze.
+
+### Niezaimplementowane scenariusze (fail-fast jeśli wystąpią)
+
+- **Cross-year dividend refund** — zwrot podatku u źródła w innym roku niż wypłata dywidendy. Fail-fast `H2`. Wymaga decyzji A/B (przypisać do roku wypłaty czy roku otrzymania zwrotu) — odłożone do pierwszego rzeczywistego przypadku w danych.
+- **CFD wypłacający dywidendę** — fail-fast w KROK 3 (manualna decyzja czy traktować jako derywat-z-przychodem-okresowym czy SECURITY).
+- **Reverse split z konsekwencją FIFO** — obecna implementacja waży lots ilością (quantity); poprawne traktowanie wymagałoby ważenia kosztem PLN. REMX 2020 to jedyny case w danych, gdzie różnica jest pomijalna.
+
+### Inne
+
 - Program zakłada jedną walutę rozliczenia per instrument (derivowaną z exchange suffix lub `asset`). Egzotyczne instrumenty wielowalutowe nie są wspierane.
 - Nieznane `symbolType` albo brak metadanych → `UnknownInstrumentError` / `UnknownTypeError`. Rozwiązanie: dodaj wpis do `config/symbol_overrides.json` i/lub rozszerz `EXANTE_TYPE_TO_KIND` w `symbol_metadata.py`.
-- Testowane przypadki: akcje, ETF, CFD, wymiana EUR/USD. Opcje, futures, obligacje nie były weryfikowane.
+- Testowane przypadki: akcje, ETF, CFD, wymiana EUR/USD, dywidendy USA/CA/SE. Opcje, futures, obligacje, dywidendy z innych krajów nie były weryfikowane.
+- **Cache NBP (`data/nbp_cache.json`)** nie ma walidacji integralności ani obsługi retroaktywnych korekt tabel A. Jeśli NBP koryguje historyczny kurs (rzadkie) — usuń plik cache i uruchom ponownie. Cache jest persistowany na końcu udanego przebiegu kalkulatora.
 
 ## Licencja
 
