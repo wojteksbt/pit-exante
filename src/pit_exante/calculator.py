@@ -174,6 +174,326 @@ def _build_execution_date_map(transactions: list[Transaction]) -> dict[str, date
     return exec_dates
 
 
+def _fx_commission_event(
+    t: Transaction,
+    execution_date_map: dict[str, date],
+    commission_map: dict[str, Decimal],
+) -> TaxEvent | None:
+    """Build TaxEvent for EUR/USD.E.FX manual currency exchange commission.
+
+    EUR/USD.E.FX is broker-side currency exchange (not forex trading) —
+    economically identical to AUTOCONVERSION (SKIP per art. 24c). P&L is
+    zero (spread only); only the commission (~0.01 USD/trade) is booked
+    as cost. Returns None if no commission was recorded.
+    """
+    exec_date = execution_date_map.get(t.order_id) if t.order_id else None
+    tx_date = exec_date or _effective_date(t)
+    commission = (
+        commission_map.get(t.order_id, Decimal("0"))
+        if t.order_id
+        else Decimal("0")
+    )
+    if commission <= 0:
+        return None
+    assert t.symbol_id is not None
+    nbp_rate = get_rate(t.currency, tx_date)
+    return TaxEvent(
+        date=tx_date,
+        symbol=t.symbol_id,
+        account_id=t.account_id,
+        event_type="fee",
+        income_original=Decimal("0"),
+        cost_original=commission,
+        income_pln=Decimal("0"),
+        cost_pln=to_pln(commission, nbp_rate),
+        currency=t.currency,
+        nbp_rate=nbp_rate,
+        details=f"FX exchange commission: {t.symbol_id}",
+    )
+
+
+def _handle_corporate_action(
+    t: Transaction,
+    ca_txns_by_symbol: dict[str, list[Transaction]],
+    fifo: FifoEngine,
+    tax_events: list[TaxEvent],
+    processed_uuids: set[str],
+) -> None:
+    """Process a CORPORATE ACTION group (removal + addition + optional cash).
+
+    Reverse split / merger pattern: original shares removed, new shares
+    added at a different ratio, with fractional residual paid in cash.
+    Cost basis from removed lots transfers to added lots; fractional cash
+    is treated as a partial sell with proportional cost. NBP rate from
+    fractional payout date (PitFx convention for cash leg).
+
+    Mutates: tax_events (append), processed_uuids (add).
+    """
+    assert t.symbol_id is not None
+
+    ca_txns = ca_txns_by_symbol.get(t.symbol_id, [t])
+    for ct in ca_txns:
+        processed_uuids.add(ct.uuid)
+
+    removal = None
+    addition = None
+    fractional_cash = None
+    for ct in ca_txns:
+        if ct.asset == ct.symbol_id or (
+            ct.symbol_id and ct.asset.startswith(ct.symbol_id.split(".")[0])
+        ):
+            if ct.sum < 0:
+                removal = ct
+            elif ct.sum > 0 and ct.transaction_price is not None:
+                addition = ct
+        elif ct.asset in BARE_CURRENCIES:
+            fractional_cash = ct
+
+    if not (removal and addition):
+        return
+
+    removal_date = _effective_date(removal)
+    fifo_acct_removal = _normalize_account(removal.account_id)
+    nbp_rate = get_rate(removal.currency, removal_date)
+    cash_amount = (
+        Decimal(str(fractional_cash.sum)) if fractional_cash else None
+    )
+    cash_nbp = (
+        get_rate(
+            fractional_cash.currency if fractional_cash else removal.currency,
+            _effective_date(fractional_cash) if fractional_cash else removal_date,
+        )
+        if fractional_cash
+        else nbp_rate
+    )
+
+    events = fifo.apply_reverse_split(
+        account_id=fifo_acct_removal,
+        symbol=removal.symbol_id,
+        reverse_date=removal_date,
+        old_quantity=abs(removal.sum),
+        new_quantity=addition.sum,
+        fractional_cash=cash_amount,
+        currency=removal.currency,
+        nbp_rate=cash_nbp,
+    )
+    tax_events.extend(events)
+
+
+def _handle_tax_withheld(
+    t: Transaction,
+    dividend_events: list[DividendEvent],
+    dividend_by_uuid: dict[str, DividendEvent],
+    dividend_by_symbol_date: dict[tuple[str, str], list[DividendEvent]],
+    dividend_txns_by_symbol: dict[str, list[tuple[int, DividendEvent]]],
+    tax_to_dividend_map: dict[str, DividendEvent],
+    unlinked_tax_entries: list[Transaction],
+) -> None:
+    """Process a TAX_WITHHELD transaction by linking it to its dividend.
+
+    Linkage strategies, in priority order:
+      1. parent_uuid → DIVIDEND (direct broker-side link)
+      2. parent_uuid → TAX → DIVIDEND (rollback chain following)
+      3. operationType=TAX without parent_uuid → match by timestamp + symbol
+      4. US TAX with comment → parse symbol, match by timestamp/date, or
+         attach to nearest preceding parent dividend (cross-date refund),
+         or create a standalone refund/recalculation event.
+
+    Mutates: dividend_events, tax_to_dividend_map, unlinked_tax_entries,
+    and the matched DividendEvent.tax_withheld[_pln] fields.
+
+    Raises ValueError on cross-year refund or over-refund anomalies.
+    """
+    tx_date = _timestamp_date(t)
+    tax_amount = abs(t.sum)
+    nbp_rate = get_rate(t.currency, tx_date)
+    tax_pln = to_pln(tax_amount, nbp_rate)
+
+    if t.parent_uuid and t.parent_uuid in dividend_by_uuid:
+        # TAX linked by parentUuid → DIVIDEND
+        div = dividend_by_uuid[t.parent_uuid]
+        if t.sum > 0:
+            div.tax_withheld -= tax_amount
+            div.tax_withheld_pln -= tax_pln
+        else:
+            div.tax_withheld += tax_amount
+            div.tax_withheld_pln += tax_pln
+        tax_to_dividend_map[t.uuid] = div
+        return
+
+    if t.parent_uuid and t.parent_uuid in tax_to_dividend_map:
+        # Rollback: parentUuid → TAX → DIVIDEND (chain following).
+        # Mirror direct-link sign handling: positive sum = refund,
+        # negative sum = additional WHT.
+        div = tax_to_dividend_map[t.parent_uuid]
+        if t.sum > 0:
+            div.tax_withheld -= tax_amount
+            div.tax_withheld_pln -= tax_pln
+        else:
+            div.tax_withheld += tax_amount
+            div.tax_withheld_pln += tax_pln
+        return
+
+    if t.operation_type == "TAX" and not t.parent_uuid and t.symbol_id:
+        # TAX without parentUuid — match by timestamp proximity + symbol
+        matched = _match_tax_by_timestamp(
+            t, tax_amount, tax_pln, dividend_txns_by_symbol
+        )
+        if not matched:
+            unlinked_tax_entries.append(t)
+        return
+
+    if not t.comment:
+        return
+
+    # US TAX: parse comment for symbol, match by timestamp proximity
+    symbol = _parse_dividend_symbol_from_comment(t.comment)
+    if not symbol:
+        # Recalculation without symbol — US TAX by operation type
+        div_event = DividendEvent(
+            date=tx_date,
+            symbol="US_TAX_RECALC",
+            account_id=t.account_id,
+            gross_amount=Decimal("0"),
+            gross_amount_pln=Decimal("0"),
+            tax_withheld=-t.sum if t.sum > 0 else tax_amount,
+            tax_withheld_pln=to_pln(-t.sum, nbp_rate) if t.sum > 0 else tax_pln,
+            currency=t.currency,
+            nbp_rate=nbp_rate,
+            comment=t.comment or "",
+            country="US",
+        )
+        dividend_events.append(div_event)
+        return
+
+    if symbol not in dividend_txns_by_symbol:
+        # Recalculation without symbol — US TAX by operation type
+        div_event = DividendEvent(
+            date=tx_date,
+            symbol="US_TAX_RECALC",
+            account_id=t.account_id,
+            gross_amount=Decimal("0"),
+            gross_amount_pln=Decimal("0"),
+            tax_withheld=-t.sum if t.sum > 0 else tax_amount,
+            tax_withheld_pln=to_pln(-t.sum, nbp_rate) if t.sum > 0 else tax_pln,
+            currency=t.currency,
+            nbp_rate=nbp_rate,
+            comment=t.comment or "",
+            country="US",
+        )
+        dividend_events.append(div_event)
+        return
+
+    sign_amount = tax_amount if t.sum < 0 else -tax_amount
+    sign_pln = tax_pln if t.sum < 0 else -tax_pln
+    matched = _match_tax_by_timestamp(
+        t, sign_amount, sign_pln,
+        dividend_txns_by_symbol,
+        max_delta_ms=120_000,
+        symbol_override=symbol,
+    )
+    if matched:
+        return
+
+    if t.sum < 0:
+        key = (symbol, tx_date.isoformat())
+        matching_divs = dividend_by_symbol_date.get(key, [])
+        if matching_divs:
+            div = matching_divs[0]
+            div.tax_withheld += tax_amount
+            div.tax_withheld_pln += tax_pln
+        return
+
+    # Standalone US TAX (recalculation or no matching dividend).
+    # Try first to link cross-date refund to nearest preceding parent
+    # dividend (same symbol+account) — per art. 11a ust. 2 WHT i jego
+    # korekta używają kursu NBP z dnia oryginalnej dywidendy (PitFx).
+    parent_div = None
+    for ts, ev in sorted(
+        dividend_txns_by_symbol.get(symbol, []),
+        key=lambda x: x[0],
+        reverse=True,
+    ):
+        if (
+            _normalize_account(ev.account_id) == _normalize_account(t.account_id)
+            and ev.gross_amount > 0
+            and ts < t.timestamp
+        ):
+            parent_div = ev
+            break
+
+    if parent_div is not None:
+        if parent_div.date.year < tx_date.year:
+            raise ValueError(
+                f"Refund cross-year detected: {t.sum} {t.currency} "
+                f"received {tx_date.isoformat()} relates to dividend "
+                f"{parent_div.symbol} from "
+                f"{parent_div.date.isoformat()} "
+                f"({parent_div.date.year}). "
+                f"Polish PIT does not have unambiguous handling for "
+                f"this case — requires manual decision:\n"
+                f"  (A) Korekta PIT-{parent_div.date.year}: zmniejsz "
+                f"tax_paid o refund, ewentualnie czynny żal.\n"
+                f"  (B) Negatywny WHT w PIT-{tx_date.year}: zmniejsz "
+                f"tax_paid roku otrzymania.\n"
+                f"Skonsultuj doradcę podatkowego. Po decyzji: "
+                f"zmodyfikuj data/transactions.json lub dodaj "
+                f"override do code path."
+            )
+        # Merge — recompute tax_withheld_pln using parent's kurs
+        if t.sum > 0:
+            parent_div.tax_withheld -= t.sum
+        else:
+            parent_div.tax_withheld += tax_amount
+        parent_div.tax_withheld_pln = to_pln(
+            parent_div.tax_withheld, parent_div.nbp_rate
+        )
+        if parent_div.tax_withheld < 0:
+            raise ValueError(
+                f"Over-refund detected: refund {t.sum} {t.currency} "
+                f"(uuid={t.uuid}) exceeds original WHT for "
+                f"{parent_div.symbol} on "
+                f"{parent_div.date.isoformat()}. "
+                f"parent.tax_withheld would become "
+                f"{parent_div.tax_withheld}. "
+                f"Possible Exante data error — investigate."
+            )
+        tax_to_dividend_map[t.uuid] = parent_div
+        return
+
+    # No parent — create standalone refund/recalc event
+    if t.sum > 0:
+        # Positive = refund → negative tax withheld
+        div_event = DividendEvent(
+            date=tx_date,
+            symbol=symbol,
+            account_id=t.account_id,
+            gross_amount=Decimal("0"),
+            gross_amount_pln=Decimal("0"),
+            tax_withheld=-t.sum,
+            tax_withheld_pln=to_pln(-t.sum, nbp_rate),
+            currency=t.currency,
+            nbp_rate=nbp_rate,
+            comment=t.comment,
+            country=derive_country(symbol, currency=t.currency),
+        )
+    else:
+        div_event = DividendEvent(
+            date=tx_date,
+            symbol=symbol,
+            account_id=t.account_id,
+            gross_amount=Decimal("0"),
+            gross_amount_pln=Decimal("0"),
+            tax_withheld=tax_amount,
+            tax_withheld_pln=tax_pln,
+            currency=t.currency,
+            nbp_rate=nbp_rate,
+            comment=t.comment,
+            country=derive_country(symbol, currency=t.currency),
+        )
+    dividend_events.append(div_event)
+
+
 def _parse_dividend_symbol_from_comment(comment: str) -> str | None:
     """Extract symbol from US TAX comment.
 
@@ -268,6 +588,13 @@ def calculate(transactions_path: str | Path) -> tuple[list[YearReport], dict]:
             key = (t.symbol_id, t.value_date.isoformat() if t.value_date else "")
             stock_splits[key].append(t)
 
+    # Index CA groups by symbol — used to gather cross-date fractional-cash
+    # entries (removal on D, fractional payout on D+1). Avoids O(N) dict scan
+    # per CORPORATE_ACTION transaction in the main loop.
+    ca_txns_by_symbol: dict[str, list[Transaction]] = defaultdict(list)
+    for (sym, _date_str), txns in corporate_actions.items():
+        ca_txns_by_symbol[sym].extend(txns)
+
     # Track which corporate actions / splits have been processed
     processed_uuids: set[str] = set()
 
@@ -286,23 +613,10 @@ def calculate(transactions_path: str | Path) -> tuple[list[YearReport], dict]:
                 assert t.symbol_id is not None
                 assert t.transaction_price is not None
 
-                # EUR/USD.E.FX — manual currency exchange at broker, not forex trading.
-                # Economically identical to AUTOCONVERSION (which is SKIP per art. 24c).
-                # Exante reports these as TRADE but P&L is zero (spread only).
-                # Only the commission (0.01 USD/trade) is booked as cost.
                 if t.asset.endswith(".FX"):
-                    exec_date = execution_date_map.get(t.order_id) if t.order_id else None
-                    tx_date = exec_date or _effective_date(t)
-                    commission = commission_map.get(t.order_id, Decimal("0")) if t.order_id else Decimal("0")
-                    if commission > 0:
-                        nbp_rate = get_rate(t.currency, tx_date)
-                        tax_events.append(TaxEvent(
-                            date=tx_date, symbol=t.symbol_id, account_id=t.account_id,
-                            event_type="fee", income_original=Decimal("0"),
-                            cost_original=commission, income_pln=Decimal("0"),
-                            cost_pln=to_pln(commission, nbp_rate), currency=t.currency,
-                            nbp_rate=nbp_rate, details=f"FX exchange commission: {t.symbol_id}",
-                        ))
+                    fx_event = _fx_commission_event(t, execution_date_map, commission_map)
+                    if fx_event is not None:
+                        tax_events.append(fx_event)
                     continue
 
                 fifo_acct = _normalize_account(t.account_id)
@@ -353,23 +667,10 @@ def calculate(transactions_path: str | Path) -> tuple[list[YearReport], dict]:
                 assert t.symbol_id is not None
                 assert t.transaction_price is not None
 
-                # EUR/USD.E.FX — manual currency exchange at broker, not forex trading.
-                # Economically identical to AUTOCONVERSION (which is SKIP per art. 24c).
-                # Exante reports these as TRADE but P&L is zero (spread only).
-                # Only the commission (0.01 USD/trade) is booked as cost.
                 if t.asset.endswith(".FX"):
-                    exec_date = execution_date_map.get(t.order_id) if t.order_id else None
-                    tx_date = exec_date or _effective_date(t)
-                    commission = commission_map.get(t.order_id, Decimal("0")) if t.order_id else Decimal("0")
-                    if commission > 0:
-                        nbp_rate = get_rate(t.currency, tx_date)
-                        tax_events.append(TaxEvent(
-                            date=tx_date, symbol=t.symbol_id, account_id=t.account_id,
-                            event_type="fee", income_original=Decimal("0"),
-                            cost_original=commission, income_pln=Decimal("0"),
-                            cost_pln=to_pln(commission, nbp_rate), currency=t.currency,
-                            nbp_rate=nbp_rate, details=f"FX exchange commission: {t.symbol_id}",
-                        ))
+                    fx_event = _fx_commission_event(t, execution_date_map, commission_map)
+                    if fx_event is not None:
+                        tax_events.append(fx_event)
                     continue
 
                 fifo_acct = _normalize_account(t.account_id)
@@ -447,165 +748,15 @@ def calculate(transactions_path: str | Path) -> tuple[list[YearReport], dict]:
                 dividend_txns_by_symbol[symbol].append((t.timestamp, div_event))
 
             case TaxCategory.TAX_WITHHELD:
-                tx_date = _timestamp_date(t)
-                tax_amount = abs(t.sum)
-                nbp_rate = get_rate(t.currency, tx_date)
-                tax_pln = to_pln(tax_amount, nbp_rate)
-
-                if t.parent_uuid and t.parent_uuid in dividend_by_uuid:
-                    # TAX linked by parentUuid → DIVIDEND
-                    div = dividend_by_uuid[t.parent_uuid]
-                    if t.sum > 0:
-                        div.tax_withheld -= tax_amount
-                        div.tax_withheld_pln -= tax_pln
-                    else:
-                        div.tax_withheld += tax_amount
-                        div.tax_withheld_pln += tax_pln
-                    tax_to_dividend_map[t.uuid] = div
-                elif t.parent_uuid and t.parent_uuid in tax_to_dividend_map:
-                    # Rollback: parentUuid → TAX → DIVIDEND (chain following).
-                    # Mirror direct-link sign handling: positive sum = refund,
-                    # negative sum = additional WHT.
-                    div = tax_to_dividend_map[t.parent_uuid]
-                    if t.sum > 0:
-                        div.tax_withheld -= tax_amount
-                        div.tax_withheld_pln -= tax_pln
-                    else:
-                        div.tax_withheld += tax_amount
-                        div.tax_withheld_pln += tax_pln
-                elif t.operation_type == "TAX" and not t.parent_uuid and t.symbol_id:
-                    # TAX without parentUuid — match by timestamp proximity + symbol
-                    matched = _match_tax_by_timestamp(
-                        t, tax_amount, tax_pln, dividend_txns_by_symbol
-                    )
-                    if not matched:
-                        unlinked_tax_entries.append(t)
-                elif t.comment:
-                    # US TAX: parse comment for symbol, match by timestamp proximity
-                    symbol = _parse_dividend_symbol_from_comment(t.comment)
-                    if symbol and symbol in dividend_txns_by_symbol:
-                        sign_amount = tax_amount if t.sum < 0 else -tax_amount
-                        sign_pln = tax_pln if t.sum < 0 else -tax_pln
-                        matched = _match_tax_by_timestamp(
-                            t, sign_amount, sign_pln,
-                            dividend_txns_by_symbol,
-                            max_delta_ms=120_000,
-                            symbol_override=symbol,
-                        )
-                        if matched:
-                            pass  # linked via timestamp
-                        elif t.sum < 0:
-                            key = (symbol, tx_date.isoformat())
-                            matching_divs = dividend_by_symbol_date.get(key, [])
-                            if matching_divs:
-                                div = matching_divs[0]
-                                div.tax_withheld += tax_amount
-                                div.tax_withheld_pln += tax_pln
-                        else:
-                            # Standalone US TAX (recalculation or no matching dividend).
-                            # Try first to link cross-date refund to nearest preceding
-                            # parent dividend (same symbol+account) — per art. 11a ust. 2
-                            # WHT i jego korekta używają kursu NBP z dnia oryginalnej
-                            # dywidendy (PitFx convention).
-                            parent_div = None
-                            for ts, ev in sorted(
-                                dividend_txns_by_symbol.get(symbol, []),
-                                key=lambda x: x[0],
-                                reverse=True,
-                            ):
-                                if (
-                                    _normalize_account(ev.account_id)
-                                    == _normalize_account(t.account_id)
-                                    and ev.gross_amount > 0
-                                    and ts < t.timestamp
-                                ):
-                                    parent_div = ev
-                                    break
-
-                            if parent_div is not None:
-                                if parent_div.date.year < tx_date.year:
-                                    raise ValueError(
-                                        f"Refund cross-year detected: {t.sum} {t.currency} "
-                                        f"received {tx_date.isoformat()} relates to dividend "
-                                        f"{parent_div.symbol} from "
-                                        f"{parent_div.date.isoformat()} "
-                                        f"({parent_div.date.year}). "
-                                        f"Polish PIT does not have unambiguous handling for "
-                                        f"this case — requires manual decision:\n"
-                                        f"  (A) Korekta PIT-{parent_div.date.year}: zmniejsz "
-                                        f"tax_paid o refund, ewentualnie czynny żal.\n"
-                                        f"  (B) Negatywny WHT w PIT-{tx_date.year}: zmniejsz "
-                                        f"tax_paid roku otrzymania.\n"
-                                        f"Skonsultuj doradcę podatkowego. Po decyzji: "
-                                        f"zmodyfikuj data/transactions.json lub dodaj "
-                                        f"override do code path."
-                                    )
-                                # Merge — recompute tax_withheld_pln using parent's kurs
-                                if t.sum > 0:
-                                    parent_div.tax_withheld -= t.sum
-                                else:
-                                    parent_div.tax_withheld += tax_amount
-                                parent_div.tax_withheld_pln = to_pln(
-                                    parent_div.tax_withheld, parent_div.nbp_rate
-                                )
-                                if parent_div.tax_withheld < 0:
-                                    raise ValueError(
-                                        f"Over-refund detected: refund {t.sum} {t.currency} "
-                                        f"(uuid={t.uuid}) exceeds original WHT for "
-                                        f"{parent_div.symbol} on "
-                                        f"{parent_div.date.isoformat()}. "
-                                        f"parent.tax_withheld would become "
-                                        f"{parent_div.tax_withheld}. "
-                                        f"Possible Exante data error — investigate."
-                                    )
-                                tax_to_dividend_map[t.uuid] = parent_div
-                            else:
-                                if t.sum > 0:
-                                    # Positive = refund → negative tax withheld
-                                    div_event = DividendEvent(
-                                        date=tx_date,
-                                        symbol=symbol,
-                                        account_id=t.account_id,
-                                        gross_amount=Decimal("0"),
-                                        gross_amount_pln=Decimal("0"),
-                                        tax_withheld=-t.sum,
-                                        tax_withheld_pln=to_pln(-t.sum, nbp_rate),
-                                        currency=t.currency,
-                                        nbp_rate=nbp_rate,
-                                        comment=t.comment,
-                                        country=derive_country(symbol, currency=t.currency),
-                                    )
-                                else:
-                                    div_event = DividendEvent(
-                                        date=tx_date,
-                                        symbol=symbol,
-                                        account_id=t.account_id,
-                                        gross_amount=Decimal("0"),
-                                        gross_amount_pln=Decimal("0"),
-                                        tax_withheld=tax_amount,
-                                        tax_withheld_pln=tax_pln,
-                                        currency=t.currency,
-                                        nbp_rate=nbp_rate,
-                                        comment=t.comment,
-                                        country=derive_country(symbol, currency=t.currency),
-                                    )
-                                dividend_events.append(div_event)
-                    else:
-                        # Recalculation without symbol — US TAX by operation type
-                        div_event = DividendEvent(
-                            date=tx_date,
-                            symbol="US_TAX_RECALC",
-                            account_id=t.account_id,
-                            gross_amount=Decimal("0"),
-                            gross_amount_pln=Decimal("0"),
-                            tax_withheld=-t.sum if t.sum > 0 else tax_amount,
-                            tax_withheld_pln=to_pln(-t.sum, nbp_rate) if t.sum > 0 else tax_pln,
-                            currency=t.currency,
-                            nbp_rate=nbp_rate,
-                            comment=t.comment or "",
-                            country="US",
-                        )
-                        dividend_events.append(div_event)
+                _handle_tax_withheld(
+                    t,
+                    dividend_events,
+                    dividend_by_uuid,
+                    dividend_by_symbol_date,
+                    dividend_txns_by_symbol,
+                    tax_to_dividend_map,
+                    unlinked_tax_entries,
+                )
 
             case TaxCategory.SPLIT:
                 assert t.symbol_id is not None
@@ -628,57 +779,9 @@ def calculate(transactions_path: str | Path) -> tuple[list[YearReport], dict]:
                 )
 
             case TaxCategory.CORPORATE_ACTION:
-                assert t.symbol_id is not None
-                tx_date = _effective_date(t)
-
-                # Get all related corporate action transactions
-                key = (t.symbol_id, tx_date.isoformat())
-                ca_txns = corporate_actions.get(key, [t])
-                for ct in ca_txns:
-                    processed_uuids.add(ct.uuid)
-
-                # Also check other dates for fractional cash payment (may be next day)
-                for potential_key, potential_txns in corporate_actions.items():
-                    if potential_key[0] == t.symbol_id and potential_key != key:
-                        ca_txns = ca_txns + potential_txns
-                        for ct in potential_txns:
-                            processed_uuids.add(ct.uuid)
-
-                # Parse: find removal (negative sum, instrument), addition (positive sum, instrument), cash
-                removal = None
-                addition = None
-                fractional_cash = None
-
-                for ct in ca_txns:
-                    if ct.asset == ct.symbol_id or (ct.symbol_id and ct.asset.startswith(ct.symbol_id.split(".")[0])):
-                        if ct.sum < 0:
-                            removal = ct
-                        elif ct.sum > 0 and ct.transaction_price is not None:
-                            addition = ct
-                    elif ct.asset in BARE_CURRENCIES:
-                        fractional_cash = ct
-
-                if removal and addition:
-                    removal_date = _effective_date(removal)
-                    fifo_acct_removal = _normalize_account(removal.account_id)
-                    nbp_rate = get_rate(removal.currency, removal_date)
-                    cash_amount = Decimal(str(fractional_cash.sum)) if fractional_cash else None
-                    cash_nbp = get_rate(
-                        fractional_cash.currency if fractional_cash else removal.currency,
-                        _effective_date(fractional_cash) if fractional_cash else removal_date
-                    ) if fractional_cash else nbp_rate
-
-                    events = fifo.apply_reverse_split(
-                        account_id=fifo_acct_removal,
-                        symbol=removal.symbol_id,
-                        reverse_date=removal_date,
-                        old_quantity=abs(removal.sum),
-                        new_quantity=addition.sum,
-                        fractional_cash=cash_amount,
-                        currency=removal.currency,
-                        nbp_rate=cash_nbp,
-                    )
-                    tax_events.extend(events)
+                _handle_corporate_action(
+                    t, ca_txns_by_symbol, fifo, tax_events, processed_uuids
+                )
 
             case TaxCategory.ROLLOVER_COST:
                 tx_date = _effective_date(t)
@@ -867,28 +970,29 @@ def _aggregate_by_year(
         total_due = Decimal("0")
 
         for country, events in by_country.items():
-            c_income = sum((e.gross_amount_pln for e in events), Decimal("0"))
-            c_paid = sum((e.tax_withheld_pln for e in events), Decimal("0"))
-            c_due = sum(
-                (
-                    (e.gross_amount_pln * TAX_RATE).quantize(
-                        Decimal("0.01"), rounding=ROUND_HALF_UP
-                    )
-                    for e in events
-                ),
-                Decimal("0"),
-            )
-            c_cap = sum(
-                (
-                    (e.gross_amount_pln * upo_rate(country)).quantize(
-                        Decimal("0.01"), rounding=ROUND_HALF_UP
-                    )
-                    for e in events
-                ),
-                Decimal("0"),
-            )
+            country_upo = upo_rate(country)
+            sorted_events = sorted(events, key=lambda x: x.date)
 
-            if is_below_upo_threshold(country, events):
+            # Single pass: aggregate + per-event cap_i for downstream allocation.
+            c_income = Decimal("0")
+            c_paid = Decimal("0")
+            c_due = Decimal("0")
+            c_cap = Decimal("0")
+            cap_per_event: dict[int, Decimal] = {}
+            for e in sorted_events:
+                c_income += e.gross_amount_pln
+                c_paid += e.tax_withheld_pln
+                c_due += (e.gross_amount_pln * TAX_RATE).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
+                cap_i = (e.gross_amount_pln * country_upo).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
+                cap_per_event[id(e)] = cap_i
+                c_cap += cap_i
+
+            below_upo = is_below_upo_threshold(country, events)
+            if below_upo:
                 # WHT pobrany ≤ stawka UPO → cały paid podlega odliczeniu
                 # (nie cap-ujemy artefaktów zaokrągleń w PLN)
                 c_to_deduct = min(c_paid, c_due)  # nadal max 19% PL
@@ -903,18 +1007,13 @@ def _aggregate_by_year(
             # base sum < c_to_deduct (mixed-rate edge case), distribute residual
             # chronologically to rows with WHT > base. Invariant by construction:
             # Σ deduct_pln == c_to_deduct.
-            sorted_events = sorted(events, key=lambda x: x.date)
-            if is_below_upo_threshold(country, events):
+            if below_upo:
                 for e in sorted_events:
                     e.deduct_pln = e.tax_withheld_pln
             else:
-                country_upo = upo_rate(country)
                 base_total = Decimal("0")
                 for e in sorted_events:
-                    cap_i = (e.gross_amount_pln * country_upo).quantize(
-                        Decimal("0.01"), rounding=ROUND_HALF_UP
-                    )
-                    e.deduct_pln = min(e.tax_withheld_pln, cap_i)
+                    e.deduct_pln = min(e.tax_withheld_pln, cap_per_event[id(e)])
                     base_total += e.deduct_pln
                 residual = c_to_deduct - base_total
                 for e in sorted_events:
