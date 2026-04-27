@@ -175,11 +175,21 @@ def generate_year_report(report: YearReport) -> str:
             )
             lines.append("─" * 126)
 
+            from .country import is_below_upo_threshold, upo_rate as _upo
+            # Per-row deduction musi replikować country branch — inaczej suma per-row
+            # ≠ aggregate (USA 2025 case: 50.12 vs 50.24 PLN).
+            no_cap_branch = is_below_upo_threshold(country_code, events)
+            country_upo = _upo(country_code)
+
             for e in sorted(events, key=lambda x: x.date):
-                from .country import upo_rate as _upo
                 tax_pl = max(Decimal("0"), (e.gross_amount_pln * TAX_RATE).quantize(Decimal("0.01")))
-                cap = (e.gross_amount_pln * _upo(country_code)).quantize(Decimal("0.01"))
-                deduct = min(e.tax_withheld_pln, cap)
+                cap = (e.gross_amount_pln * country_upo).quantize(Decimal("0.01"))
+                if no_cap_branch:
+                    # No cap clamping — odlicz min(WHT, PL19); suma = c_paid = aggregate
+                    deduct = min(e.tax_withheld_pln, tax_pl)
+                else:
+                    # Cap clamping (np. CA z WHT 25%) — odlicz min(WHT, cap UPO)
+                    deduct = min(e.tax_withheld_pln, cap)
                 lines.append(
                     f"{e.date.isoformat():<12}{e.symbol:<16}"
                     f"{e.gross_amount:>10.2f} {e.currency:>4}"

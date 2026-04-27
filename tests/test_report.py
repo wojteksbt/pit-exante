@@ -96,3 +96,72 @@ class TestVigUsInPochodneSection:
         assert idx_next != -1
         section = text[idx_pochodne:idx_next]
         assert "VIG.US" in section, "VIG.US must be inside pochodne section"
+
+
+class TestPerRowDeductSumsToCountryAggregate:
+    """Guardrail: suma kolumny "Do odliczenia" per kraj musi równać się
+    aggregate `cd.tax_to_deduct_pln` (= wartość filingowa).
+
+    Historyczny bug (kwiecień 2026): per-row zawsze cap-clampował, country
+    branch używał "no cap clamping" gdy WHT ≤ UPO+0.1pp → dla USA 50.12
+    vs aggregate 50.24 PLN. Filing był poprawny (używa aggregate), ale
+    tabela display'owa wprowadzała w błąd.
+    """
+
+    def _parse_country_table_deducts(self, text: str, country_name: str) -> list[Decimal]:
+        """Wyciągnij wartości z ostatniej kolumny (Do odliczenia) z tabeli kraju."""
+        idx = text.find(f"Kraj: {country_name}")
+        if idx == -1:
+            return []
+        # Sekcja kończy się następnym "Kraj:" albo końcem
+        end = text.find("Kraj:", idx + 1)
+        if end == -1:
+            end = len(text)
+        section = text[idx:end]
+        deducts: list[Decimal] = []
+        for line in section.splitlines():
+            line = line.strip()
+            # Wiersze danych zaczynają się od daty YYYY-MM-DD
+            if len(line) >= 10 and line[:4].isdigit() and line[4] == "-":
+                # Ostatnia liczba w linii to "Do odliczenia"
+                tokens = line.split()
+                deducts.append(Decimal(tokens[-1]))
+        return deducts
+
+    def test_usa_per_row_sum_equals_aggregate(self, report_2025):
+        text, r = report_2025
+        if "US" not in r.dividends_by_country:
+            return  # no USA dividends in this year
+        cd = r.dividends_by_country["US"]
+        rows = self._parse_country_table_deducts(text, "USA (US)")
+        assert len(rows) > 0, "Expected at least one USA dividend row"
+        per_row_sum = sum(rows, Decimal("0"))
+        assert per_row_sum == cd.tax_to_deduct_pln, (
+            f"Per-row sum {per_row_sum} != country aggregate {cd.tax_to_deduct_pln}. "
+            f"Display branch (cap clamp vs no-cap) musi być spójny z calculator."
+        )
+
+    def test_canada_per_row_sum_equals_aggregate(self, report_2025):
+        text, r = report_2025
+        if "CA" not in r.dividends_by_country:
+            return
+        cd = r.dividends_by_country["CA"]
+        rows = self._parse_country_table_deducts(text, "Kanada (CA)")
+        assert len(rows) > 0, "Expected at least one Canada dividend row"
+        per_row_sum = sum(rows, Decimal("0"))
+        assert per_row_sum == cd.tax_to_deduct_pln, (
+            f"Per-row sum {per_row_sum} != country aggregate {cd.tax_to_deduct_pln}"
+        )
+
+    def test_all_countries_per_row_sum_equals_aggregate(self, report_2025):
+        text, r = report_2025
+        country_names = {"US": "USA (US)", "CA": "Kanada (CA)", "SE": "Szwecja (SE)"}
+        for code, cd in r.dividends_by_country.items():
+            label = country_names.get(code, f"{code} ({code})")
+            rows = self._parse_country_table_deducts(text, label)
+            if not rows:
+                continue
+            per_row_sum = sum(rows, Decimal("0"))
+            assert per_row_sum == cd.tax_to_deduct_pln, (
+                f"{code}: per-row {per_row_sum} != aggregate {cd.tax_to_deduct_pln}"
+            )

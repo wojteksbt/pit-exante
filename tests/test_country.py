@@ -129,3 +129,61 @@ class TestUpoRate:
         from pit_exante.country import upo_rate
         assert upo_rate("??") == Decimal("0.19")
         assert upo_rate("XX") == Decimal("0.19")
+
+
+class TestIsBelowUpoThreshold:
+    """Country branch: WHT effective rate ≤ UPO + tolerance → no cap clamping."""
+
+    def _ev(self, gross, paid, currency="USD"):
+        return DividendEvent(
+            date=date(2025, 1, 1), symbol="X", account_id="A",
+            gross_amount=Decimal(gross), gross_amount_pln=Decimal(gross) * 4,
+            tax_withheld=Decimal(paid), tax_withheld_pln=Decimal(paid) * 4,
+            currency=currency, nbp_rate=Decimal("4"), comment="", country="US",
+        )
+
+    def test_usa_at_15_percent_is_below(self):
+        # Effective WHT 15.00% = UPO → no cap branch
+        from pit_exante.country import is_below_upo_threshold
+        events = [self._ev("100.00", "15.00")]
+        assert is_below_upo_threshold("US", events) is True
+
+    def test_usa_at_14_64_percent_is_below(self):
+        # Real-world 2025 USA: 13.53/92.42 ≈ 14.64% → no cap branch
+        from pit_exante.country import is_below_upo_threshold
+        events = [self._ev("92.42", "13.53")]
+        assert is_below_upo_threshold("US", events) is True
+
+    def test_usa_at_15_05_percent_within_tolerance(self):
+        # Within 0.1pp tolerance → still no cap branch
+        from pit_exante.country import is_below_upo_threshold
+        events = [self._ev("100.00", "15.05")]
+        assert is_below_upo_threshold("US", events) is True
+
+    def test_usa_at_15_2_percent_exceeds_tolerance(self):
+        # 15.2% > 15% + 0.1pp → cap clamping branch
+        from pit_exante.country import is_below_upo_threshold
+        events = [self._ev("100.00", "15.20")]
+        assert is_below_upo_threshold("US", events) is False
+
+    def test_canada_at_25_percent_is_above(self):
+        # Real-world CA WHT 25% > UPO 15% → cap clamping
+        from pit_exante.country import is_below_upo_threshold
+        events = [self._ev("100.00", "25.00", currency="CAD")]
+        assert is_below_upo_threshold("CA", events) is False
+
+    def test_zero_gross_returns_false(self):
+        # Edge case: no income → not "below threshold" (avoids div-by-zero)
+        from pit_exante.country import is_below_upo_threshold
+        events = [self._ev("0.00", "0.00")]
+        assert is_below_upo_threshold("US", events) is False
+
+    def test_aggregates_across_multiple_events(self):
+        # Mix of rows averaging to below-UPO → no cap branch
+        from pit_exante.country import is_below_upo_threshold
+        events = [
+            self._ev("100.00", "16.00"),  # 16% — above
+            self._ev("100.00", "13.00"),  # 13% — below
+        ]
+        # Average 14.5% < 15% → no cap branch
+        assert is_below_upo_threshold("US", events) is True

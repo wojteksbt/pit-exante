@@ -11,7 +11,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 from .classifier import classify
-from .country import derive_country, upo_rate
+from .country import derive_country, is_below_upo_threshold, upo_rate
 from .fifo import FifoEngine
 from .models import (
     BARE_CURRENCIES,
@@ -866,13 +866,6 @@ def _aggregate_by_year(
         total_to_deduct = Decimal("0")
         total_due = Decimal("0")
 
-        # Tolerancja na zaokrąglenia kursów — gdy efektywna stawka WHT
-        # w walucie oryginalnej jest ≤ stawce UPO + tej tolerancji, traktujemy
-        # to jako "WHT pobrany na poziomie UPO" (np. USA 15% = UPO 15%) i nie
-        # cap-ujemy w PLN. Cap w PLN dawałby sztuczne straty groszowe
-        # wynikające wyłącznie z konwersji walutowych.
-        UPO_RATE_TOLERANCE = Decimal("0.001")  # 0.1 pp
-
         for country, events in by_country.items():
             c_income = sum((e.gross_amount_pln for e in events), Decimal("0"))
             c_paid = sum((e.tax_withheld_pln for e in events), Decimal("0"))
@@ -895,16 +888,7 @@ def _aggregate_by_year(
                 Decimal("0"),
             )
 
-            # Sprawdź effektywną stawkę WHT w walucie oryginalnej
-            c_gross_orig = sum((e.gross_amount for e in events), Decimal("0"))
-            c_paid_orig = sum((e.tax_withheld for e in events), Decimal("0"))
-            country_upo = upo_rate(country)
-            if c_gross_orig > 0:
-                effective_rate = c_paid_orig / c_gross_orig
-            else:
-                effective_rate = Decimal("0")
-
-            if effective_rate <= country_upo + UPO_RATE_TOLERANCE:
+            if is_below_upo_threshold(country, events):
                 # WHT pobrany ≤ stawka UPO → cały paid podlega odliczeniu
                 # (nie cap-ujemy artefaktów zaokrągleń w PLN)
                 c_to_deduct = min(c_paid, c_due)  # nadal max 19% PL
