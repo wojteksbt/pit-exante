@@ -4,11 +4,12 @@
 import json
 import os
 import time
+from base64 import b64encode
 from datetime import datetime
 from pathlib import Path
-from urllib.request import Request, urlopen
 from urllib.error import HTTPError
-from base64 import b64encode
+from urllib.request import Request, urlopen
+
 # Load .env manually (no external dependencies)
 env_path = Path(__file__).parent / ".env"
 if env_path.exists():

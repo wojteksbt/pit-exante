@@ -1,11 +1,12 @@
 """Tests for FIFO engine."""
 
-import pytest
+import sys
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-import sys
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from pit_exante.fifo import FifoEngine, _pln
@@ -30,11 +31,20 @@ class TestFifoBuySell:
 
     def test_simple_buy_sell_profit(self):
         fifo = FifoEngine()
-        fifo.buy("A", "STOCK", date(2020, 1, 1), Decimal("10"), Decimal("100"),
-                 "USD", Decimal("5"), Decimal("4.0"))
+        fifo.buy(
+            "A", "STOCK", date(2020, 1, 1), Decimal("10"), Decimal("100"), "USD", Decimal("5"), Decimal("4.0")
+        )
 
-        event = fifo.sell("A", "STOCK", date(2020, 6, 1), Decimal("-10"), Decimal("120"),
-                          "USD", Decimal("5"), Decimal("4.0"))
+        event = fifo.sell(
+            "A",
+            "STOCK",
+            date(2020, 6, 1),
+            Decimal("-10"),
+            Decimal("120"),
+            "USD",
+            Decimal("5"),
+            Decimal("4.0"),
+        )
 
         # Income: 10 * 120 * 4.0 = 4800.00
         assert event.income_pln == Decimal("4800.00")
@@ -45,11 +55,13 @@ class TestFifoBuySell:
 
     def test_simple_buy_sell_loss(self):
         fifo = FifoEngine()
-        fifo.buy("A", "STOCK", date(2020, 1, 1), Decimal("10"), Decimal("100"),
-                 "USD", Decimal("0"), Decimal("4.0"))
+        fifo.buy(
+            "A", "STOCK", date(2020, 1, 1), Decimal("10"), Decimal("100"), "USD", Decimal("0"), Decimal("4.0")
+        )
 
-        event = fifo.sell("A", "STOCK", date(2020, 6, 1), Decimal("-10"), Decimal("80"),
-                          "USD", Decimal("0"), Decimal("4.0"))
+        event = fifo.sell(
+            "A", "STOCK", date(2020, 6, 1), Decimal("-10"), Decimal("80"), "USD", Decimal("0"), Decimal("4.0")
+        )
 
         assert event.income_pln == Decimal("3200.00")
         assert event.cost_pln == Decimal("4000.00")
@@ -58,15 +70,25 @@ class TestFifoBuySell:
         """First lot bought is first lot sold."""
         fifo = FifoEngine()
         # Buy 10 @ 100
-        fifo.buy("A", "STOCK", date(2020, 1, 1), Decimal("10"), Decimal("100"),
-                 "USD", Decimal("0"), Decimal("4.0"))
+        fifo.buy(
+            "A", "STOCK", date(2020, 1, 1), Decimal("10"), Decimal("100"), "USD", Decimal("0"), Decimal("4.0")
+        )
         # Buy 10 @ 200
-        fifo.buy("A", "STOCK", date(2020, 2, 1), Decimal("10"), Decimal("200"),
-                 "USD", Decimal("0"), Decimal("4.0"))
+        fifo.buy(
+            "A", "STOCK", date(2020, 2, 1), Decimal("10"), Decimal("200"), "USD", Decimal("0"), Decimal("4.0")
+        )
 
         # Sell 10 — should consume first lot @ 100
-        event = fifo.sell("A", "STOCK", date(2020, 6, 1), Decimal("-10"), Decimal("150"),
-                          "USD", Decimal("0"), Decimal("4.0"))
+        event = fifo.sell(
+            "A",
+            "STOCK",
+            date(2020, 6, 1),
+            Decimal("-10"),
+            Decimal("150"),
+            "USD",
+            Decimal("0"),
+            Decimal("4.0"),
+        )
 
         # Cost should be 10 * 100 * 4.0 = 4000 (first lot)
         assert event.cost_pln == Decimal("4000.00")
@@ -76,15 +98,17 @@ class TestFifoBuySell:
     def test_partial_lot_consumption(self):
         """Selling less than a full lot leaves remainder."""
         fifo = FifoEngine()
-        fifo.buy("A", "STOCK", date(2020, 1, 1), Decimal("100"), Decimal("10"),
-                 "USD", Decimal("0"), Decimal("4.0"))
+        fifo.buy(
+            "A", "STOCK", date(2020, 1, 1), Decimal("100"), Decimal("10"), "USD", Decimal("0"), Decimal("4.0")
+        )
 
         # Sell only 30
-        event = fifo.sell("A", "STOCK", date(2020, 6, 1), Decimal("-30"), Decimal("15"),
-                          "USD", Decimal("0"), Decimal("4.0"))
+        event = fifo.sell(
+            "A", "STOCK", date(2020, 6, 1), Decimal("-30"), Decimal("15"), "USD", Decimal("0"), Decimal("4.0")
+        )
 
         assert event.income_pln == Decimal("1800.00")  # 30 * 15 * 4
-        assert event.cost_pln == Decimal("1200.00")     # 30 * 10 * 4
+        assert event.cost_pln == Decimal("1200.00")  # 30 * 10 * 4
 
         # 70 should remain
         positions = fifo.get_positions()
@@ -94,14 +118,17 @@ class TestFifoBuySell:
     def test_multi_lot_sell(self):
         """Sell spans two lots."""
         fifo = FifoEngine()
-        fifo.buy("A", "STOCK", date(2020, 1, 1), Decimal("5"), Decimal("10"),
-                 "USD", Decimal("0"), Decimal("4.0"))
-        fifo.buy("A", "STOCK", date(2020, 2, 1), Decimal("5"), Decimal("20"),
-                 "USD", Decimal("0"), Decimal("4.0"))
+        fifo.buy(
+            "A", "STOCK", date(2020, 1, 1), Decimal("5"), Decimal("10"), "USD", Decimal("0"), Decimal("4.0")
+        )
+        fifo.buy(
+            "A", "STOCK", date(2020, 2, 1), Decimal("5"), Decimal("20"), "USD", Decimal("0"), Decimal("4.0")
+        )
 
         # Sell 8 — consumes all 5 of first lot + 3 of second
-        event = fifo.sell("A", "STOCK", date(2020, 6, 1), Decimal("-8"), Decimal("30"),
-                          "USD", Decimal("0"), Decimal("4.0"))
+        event = fifo.sell(
+            "A", "STOCK", date(2020, 6, 1), Decimal("-8"), Decimal("30"), "USD", Decimal("0"), Decimal("4.0")
+        )
 
         # Cost: 5*10*4 + 3*20*4 = 200 + 240 = 440
         assert event.cost_pln == Decimal("440.00")
@@ -111,14 +138,24 @@ class TestFifoBuySell:
     def test_different_nbp_rates_per_lot(self):
         """Each lot uses its own NBP rate from buy date."""
         fifo = FifoEngine()
-        fifo.buy("A", "STOCK", date(2020, 1, 1), Decimal("10"), Decimal("100"),
-                 "USD", Decimal("0"), Decimal("3.8"))
-        fifo.buy("A", "STOCK", date(2020, 6, 1), Decimal("10"), Decimal("100"),
-                 "USD", Decimal("0"), Decimal("4.2"))
+        fifo.buy(
+            "A", "STOCK", date(2020, 1, 1), Decimal("10"), Decimal("100"), "USD", Decimal("0"), Decimal("3.8")
+        )
+        fifo.buy(
+            "A", "STOCK", date(2020, 6, 1), Decimal("10"), Decimal("100"), "USD", Decimal("0"), Decimal("4.2")
+        )
 
         # Sell all 20 at sell rate 4.0
-        event = fifo.sell("A", "STOCK", date(2020, 12, 1), Decimal("-20"), Decimal("100"),
-                          "USD", Decimal("0"), Decimal("4.0"))
+        event = fifo.sell(
+            "A",
+            "STOCK",
+            date(2020, 12, 1),
+            Decimal("-20"),
+            Decimal("100"),
+            "USD",
+            Decimal("0"),
+            Decimal("4.0"),
+        )
 
         # Income: 20 * 100 * 4.0 = 8000
         assert event.income_pln == Decimal("8000.00")
@@ -128,14 +165,24 @@ class TestFifoBuySell:
     def test_separate_accounts(self):
         """FIFO queues are per (account, symbol)."""
         fifo = FifoEngine()
-        fifo.buy("A", "STOCK", date(2020, 1, 1), Decimal("10"), Decimal("100"),
-                 "USD", Decimal("0"), Decimal("4.0"))
-        fifo.buy("B", "STOCK", date(2020, 1, 1), Decimal("10"), Decimal("200"),
-                 "USD", Decimal("0"), Decimal("4.0"))
+        fifo.buy(
+            "A", "STOCK", date(2020, 1, 1), Decimal("10"), Decimal("100"), "USD", Decimal("0"), Decimal("4.0")
+        )
+        fifo.buy(
+            "B", "STOCK", date(2020, 1, 1), Decimal("10"), Decimal("200"), "USD", Decimal("0"), Decimal("4.0")
+        )
 
         # Sell from account A
-        event = fifo.sell("A", "STOCK", date(2020, 6, 1), Decimal("-10"), Decimal("150"),
-                          "USD", Decimal("0"), Decimal("4.0"))
+        event = fifo.sell(
+            "A",
+            "STOCK",
+            date(2020, 6, 1),
+            Decimal("-10"),
+            Decimal("150"),
+            "USD",
+            Decimal("0"),
+            Decimal("4.0"),
+        )
 
         # Should use A's lot @ 100, not B's @ 200
         assert event.cost_pln == Decimal("4000.00")
@@ -143,13 +190,16 @@ class TestFifoBuySell:
     def test_separate_symbols(self):
         """FIFO queues are per (account, symbol)."""
         fifo = FifoEngine()
-        fifo.buy("A", "X", date(2020, 1, 1), Decimal("10"), Decimal("100"),
-                 "USD", Decimal("0"), Decimal("4.0"))
-        fifo.buy("A", "Y", date(2020, 1, 1), Decimal("10"), Decimal("200"),
-                 "USD", Decimal("0"), Decimal("4.0"))
+        fifo.buy(
+            "A", "X", date(2020, 1, 1), Decimal("10"), Decimal("100"), "USD", Decimal("0"), Decimal("4.0")
+        )
+        fifo.buy(
+            "A", "Y", date(2020, 1, 1), Decimal("10"), Decimal("200"), "USD", Decimal("0"), Decimal("4.0")
+        )
 
-        event = fifo.sell("A", "X", date(2020, 6, 1), Decimal("-10"), Decimal("150"),
-                          "USD", Decimal("0"), Decimal("4.0"))
+        event = fifo.sell(
+            "A", "X", date(2020, 6, 1), Decimal("-10"), Decimal("150"), "USD", Decimal("0"), Decimal("4.0")
+        )
 
         assert event.cost_pln == Decimal("4000.00")
 
@@ -157,25 +207,43 @@ class TestFifoBuySell:
 class TestFifoUnderflow:
     def test_sell_more_than_owned_raises(self):
         fifo = FifoEngine()
-        fifo.buy("A", "STOCK", date(2020, 1, 1), Decimal("5"), Decimal("100"),
-                 "USD", Decimal("0"), Decimal("4.0"))
+        fifo.buy(
+            "A", "STOCK", date(2020, 1, 1), Decimal("5"), Decimal("100"), "USD", Decimal("0"), Decimal("4.0")
+        )
 
         with pytest.raises(ValueError, match="FIFO underflow"):
-            fifo.sell("A", "STOCK", date(2020, 6, 1), Decimal("-10"), Decimal("100"),
-                      "USD", Decimal("0"), Decimal("4.0"))
+            fifo.sell(
+                "A",
+                "STOCK",
+                date(2020, 6, 1),
+                Decimal("-10"),
+                Decimal("100"),
+                "USD",
+                Decimal("0"),
+                Decimal("4.0"),
+            )
 
     def test_sell_empty_queue_raises(self):
         fifo = FifoEngine()
         with pytest.raises(ValueError, match="FIFO underflow"):
-            fifo.sell("A", "STOCK", date(2020, 6, 1), Decimal("-1"), Decimal("100"),
-                      "USD", Decimal("0"), Decimal("4.0"))
+            fifo.sell(
+                "A",
+                "STOCK",
+                date(2020, 6, 1),
+                Decimal("-1"),
+                Decimal("100"),
+                "USD",
+                Decimal("0"),
+                Decimal("4.0"),
+            )
 
 
 class TestStockSplit:
     def test_2_for_1_split(self):
         fifo = FifoEngine()
-        fifo.buy("A", "XLE", date(2020, 1, 1), Decimal("12"), Decimal("50"),
-                 "USD", Decimal("12"), Decimal("4.0"))
+        fifo.buy(
+            "A", "XLE", date(2020, 1, 1), Decimal("12"), Decimal("50"), "USD", Decimal("12"), Decimal("4.0")
+        )
 
         fifo.apply_split("A", "XLE", new_for_old=2, old_shares=1)
 
@@ -191,8 +259,9 @@ class TestStockSplit:
 
     def test_split_preserves_total_cost(self):
         fifo = FifoEngine()
-        fifo.buy("A", "XLE", date(2020, 1, 1), Decimal("12"), Decimal("50"),
-                 "USD", Decimal("12"), Decimal("4.0"))
+        fifo.buy(
+            "A", "XLE", date(2020, 1, 1), Decimal("12"), Decimal("50"), "USD", Decimal("12"), Decimal("4.0")
+        )
 
         cost_before = sum(lot.total_cost for lot in fifo.get_positions()[("A", "XLE")])
         fifo.apply_split("A", "XLE", new_for_old=2, old_shares=1)
@@ -218,13 +287,15 @@ class TestStockSplit:
 class TestShortPosition:
     def test_sell_short_then_buy_to_close(self):
         fifo = FifoEngine()
-        fifo.sell_short("A", "FX", date(2020, 1, 1), Decimal("100"), Decimal("1.10"),
-                        "USD", Decimal("2"), Decimal("4.0"))
+        fifo.sell_short(
+            "A", "FX", date(2020, 1, 1), Decimal("100"), Decimal("1.10"), "USD", Decimal("2"), Decimal("4.0")
+        )
 
         assert fifo.has_short_position("A", "FX") is True
 
-        event = fifo.buy_to_close("A", "FX", date(2020, 2, 1), Decimal("100"), Decimal("1.08"),
-                                  "USD", Decimal("2"), Decimal("4.0"))
+        event = fifo.buy_to_close(
+            "A", "FX", date(2020, 2, 1), Decimal("100"), Decimal("1.08"), "USD", Decimal("2"), Decimal("4.0")
+        )
 
         # Income from short sale: 100 * 1.10 * 4.0 = 440
         assert event.income_pln == Decimal("440.00")
@@ -233,26 +304,40 @@ class TestShortPosition:
 
     def test_short_underflow_raises(self):
         fifo = FifoEngine()
-        fifo.sell_short("A", "FX", date(2020, 1, 1), Decimal("5"), Decimal("1.10"),
-                        "USD", Decimal("0"), Decimal("4.0"))
+        fifo.sell_short(
+            "A", "FX", date(2020, 1, 1), Decimal("5"), Decimal("1.10"), "USD", Decimal("0"), Decimal("4.0")
+        )
 
         with pytest.raises(ValueError, match="Short FIFO underflow"):
-            fifo.buy_to_close("A", "FX", date(2020, 2, 1), Decimal("10"), Decimal("1.08"),
-                              "USD", Decimal("0"), Decimal("4.0"))
+            fifo.buy_to_close(
+                "A",
+                "FX",
+                date(2020, 2, 1),
+                Decimal("10"),
+                Decimal("1.08"),
+                "USD",
+                Decimal("0"),
+                Decimal("4.0"),
+            )
 
 
 class TestReverseSplit:
     def test_reverse_split_1_for_3(self):
         fifo = FifoEngine()
         # Buy 5 shares @ 9.9
-        fifo.buy("A", "REMX", date(2020, 1, 1), Decimal("5"), Decimal("9.9"),
-                 "USD", Decimal("0"), Decimal("4.0"))
+        fifo.buy(
+            "A", "REMX", date(2020, 1, 1), Decimal("5"), Decimal("9.9"), "USD", Decimal("0"), Decimal("4.0")
+        )
 
         events = fifo.apply_reverse_split(
-            account_id="A", symbol="REMX", reverse_date=date(2020, 4, 15),
-            old_quantity=Decimal("5"), new_quantity=Decimal("1"),
-fractional_cash=Decimal("19.89"),
-            currency="USD", nbp_rate=Decimal("4.15"),
+            account_id="A",
+            symbol="REMX",
+            reverse_date=date(2020, 4, 15),
+            old_quantity=Decimal("5"),
+            new_quantity=Decimal("1"),
+            fractional_cash=Decimal("19.89"),
+            currency="USD",
+            nbp_rate=Decimal("4.15"),
         )
 
         # Should have 1 share remaining
@@ -268,14 +353,19 @@ fractional_cash=Decimal("19.89"),
 
     def test_reverse_split_no_fractional(self):
         fifo = FifoEngine()
-        fifo.buy("A", "TEST", date(2020, 1, 1), Decimal("6"), Decimal("10"),
-                 "USD", Decimal("0"), Decimal("4.0"))
+        fifo.buy(
+            "A", "TEST", date(2020, 1, 1), Decimal("6"), Decimal("10"), "USD", Decimal("0"), Decimal("4.0")
+        )
 
         events = fifo.apply_reverse_split(
-            account_id="A", symbol="TEST", reverse_date=date(2020, 4, 15),
-            old_quantity=Decimal("6"), new_quantity=Decimal("2"),
-fractional_cash=None,
-            currency="USD", nbp_rate=Decimal("4.0"),
+            account_id="A",
+            symbol="TEST",
+            reverse_date=date(2020, 4, 15),
+            old_quantity=Decimal("6"),
+            new_quantity=Decimal("2"),
+            fractional_cash=None,
+            currency="USD",
+            nbp_rate=Decimal("4.0"),
         )
 
         assert len(events) == 0

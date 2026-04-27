@@ -1,15 +1,17 @@
 """Fail-fast guards for tax anomalies — H4, H8, H2, CFD-div, unknown-instrument."""
 
 import json
-import pytest
+import sys
 from decimal import Decimal
 from pathlib import Path
 
-import sys
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from pit_exante import calculator
+from datetime import UTC
 
+from pit_exante import calculator
 
 # Timestamps — use 2024 dates so any NBP lookup hits a stable epoch.
 # (get_rate is mocked in fixtures below, so the values are nominal.)
@@ -22,8 +24,10 @@ TS_2026_03_15 = 1773748800000  # 2026-03-15 12:00 UTC
 @pytest.fixture
 def stable_nbp_rate(monkeypatch):
     """Make get_rate deterministic — return 4.0 for any non-PLN, 1.0 for PLN."""
+
     def fake_get_rate(currency, transaction_date):
         return Decimal("1") if currency == "PLN" else Decimal("4.0")
+
     monkeypatch.setattr(calculator, "get_rate", fake_get_rate)
 
 
@@ -48,8 +52,7 @@ def _txn(**overrides):
     return base
 
 
-def _write_run(tmp_path: Path, transactions: list[dict],
-               symbol_overrides: dict | None = None) -> Path:
+def _write_run(tmp_path: Path, transactions: list[dict], symbol_overrides: dict | None = None) -> Path:
     """Write transactions.json + optional config files; return transactions path."""
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -59,9 +62,7 @@ def _write_run(tmp_path: Path, transactions: list[dict],
     if symbol_overrides is not None:
         config_dir = tmp_path / "config"
         config_dir.mkdir()
-        (config_dir / "symbol_overrides.json").write_text(
-            json.dumps(symbol_overrides)
-        )
+        (config_dir / "symbol_overrides.json").write_text(json.dumps(symbol_overrides))
     return txn_path
 
 
@@ -70,25 +71,41 @@ class TestH4OverRefund:
         # AAPL.NASDAQ dividend 100 USD with WHT 15. Then standalone US TAX refund
         # of 20 USD (positive sum, refund) — exceeds the 15 WHT → over-refund.
         txns = [
-            _txn(uuid="div1", id=1, timestamp=TS_2024_01_15,
-                 symbolId="AAPL.NASDAQ", operationType="DIVIDEND",
-                 sum="100.0", asset="AAPL.NASDAQ"),
-            _txn(uuid="tax1", id=2, timestamp=TS_2024_01_15 + 1000,
-                 symbolId="AAPL.NASDAQ", operationType="TAX",
-                 sum="-15.0", asset="USD", parentUuid="div1"),
+            _txn(
+                uuid="div1",
+                id=1,
+                timestamp=TS_2024_01_15,
+                symbolId="AAPL.NASDAQ",
+                operationType="DIVIDEND",
+                sum="100.0",
+                asset="AAPL.NASDAQ",
+            ),
+            _txn(
+                uuid="tax1",
+                id=2,
+                timestamp=TS_2024_01_15 + 1000,
+                symbolId="AAPL.NASDAQ",
+                operationType="TAX",
+                sum="-15.0",
+                asset="USD",
+                parentUuid="div1",
+            ),
             # Standalone US TAX refund (no parentUuid, comment with symbol).
             # Timestamp >2 min after dividend → _match_tax_by_timestamp fails →
             # falls into parent_div lookup → over-refund.
-            _txn(uuid="refund1", id=3,
-                 timestamp=TS_2024_01_15 + 3 * 24 * 3600 * 1000,  # 3 days later
-                 valueDate="2024-01-18",
-                 symbolId=None, operationType="US TAX",
-                 sum="20.0", asset="USD",
-                 comment="2 shares ExD 2024-01-15 PD 2024-01-15 dividend "
-                         "AAPL.NASDAQ 100.00 USD"),
+            _txn(
+                uuid="refund1",
+                id=3,
+                timestamp=TS_2024_01_15 + 3 * 24 * 3600 * 1000,  # 3 days later
+                valueDate="2024-01-18",
+                symbolId=None,
+                operationType="US TAX",
+                sum="20.0",
+                asset="USD",
+                comment="2 shares ExD 2024-01-15 PD 2024-01-15 dividend " "AAPL.NASDAQ 100.00 USD",
+            ),
         ]
-        path = _write_run(tmp_path, txns,
-                          symbol_overrides={"AAPL.NASDAQ": "STOCK"})
+        path = _write_run(tmp_path, txns, symbol_overrides={"AAPL.NASDAQ": "STOCK"})
         with pytest.raises(ValueError, match="Over-refund detected"):
             calculator.calculate(path)
 
@@ -100,12 +117,17 @@ class TestH8PlnUnknownCountry:
         # asset="PLN" makes parser._derive_currency return PLN; symbolId points to
         # an unknown exchange (.WSE not in _EXCHANGE_COUNTRY).
         txns = [
-            _txn(uuid="div1", id=1, timestamp=TS_2024_01_15,
-                 symbolId="MYSTERY.WSE", operationType="DIVIDEND",
-                 sum="50.0", asset="PLN"),
+            _txn(
+                uuid="div1",
+                id=1,
+                timestamp=TS_2024_01_15,
+                symbolId="MYSTERY.WSE",
+                operationType="DIVIDEND",
+                sum="50.0",
+                asset="PLN",
+            ),
         ]
-        path = _write_run(tmp_path, txns,
-                          symbol_overrides={"MYSTERY.WSE": "STOCK"})
+        path = _write_run(tmp_path, txns, symbol_overrides={"MYSTERY.WSE": "STOCK"})
         with pytest.raises(ValueError, match="Unknown country for PLN dividend"):
             calculator.calculate(path)
 
@@ -114,24 +136,41 @@ class TestH2RefundCrossYear:
     def test_refund_in_later_year_raises(self, tmp_path, stable_nbp_rate):
         # Dividend in 2024, standalone US TAX refund in 2025 → cross-year.
         txns = [
-            _txn(uuid="div1", id=1, timestamp=TS_2024_01_15,
-                 valueDate="2024-01-15",
-                 symbolId="AAPL.NASDAQ", operationType="DIVIDEND",
-                 sum="100.0", asset="AAPL.NASDAQ"),
-            _txn(uuid="tax1", id=2, timestamp=TS_2024_01_15 + 1000,
-                 valueDate="2024-01-15",
-                 symbolId="AAPL.NASDAQ", operationType="TAX",
-                 sum="-15.0", asset="USD", parentUuid="div1"),
+            _txn(
+                uuid="div1",
+                id=1,
+                timestamp=TS_2024_01_15,
+                valueDate="2024-01-15",
+                symbolId="AAPL.NASDAQ",
+                operationType="DIVIDEND",
+                sum="100.0",
+                asset="AAPL.NASDAQ",
+            ),
+            _txn(
+                uuid="tax1",
+                id=2,
+                timestamp=TS_2024_01_15 + 1000,
+                valueDate="2024-01-15",
+                symbolId="AAPL.NASDAQ",
+                operationType="TAX",
+                sum="-15.0",
+                asset="USD",
+                parentUuid="div1",
+            ),
             # Standalone US TAX refund in 2025 — small enough not to trigger H4
-            _txn(uuid="refund1", id=3, timestamp=TS_2025_02_03,
-                 valueDate="2025-02-03",
-                 symbolId=None, operationType="US TAX",
-                 sum="5.0", asset="USD",
-                 comment="2 shares ExD 2024-01-15 PD 2024-01-15 dividend "
-                         "AAPL.NASDAQ 100.00 USD"),
+            _txn(
+                uuid="refund1",
+                id=3,
+                timestamp=TS_2025_02_03,
+                valueDate="2025-02-03",
+                symbolId=None,
+                operationType="US TAX",
+                sum="5.0",
+                asset="USD",
+                comment="2 shares ExD 2024-01-15 PD 2024-01-15 dividend " "AAPL.NASDAQ 100.00 USD",
+            ),
         ]
-        path = _write_run(tmp_path, txns,
-                          symbol_overrides={"AAPL.NASDAQ": "STOCK"})
+        path = _write_run(tmp_path, txns, symbol_overrides={"AAPL.NASDAQ": "STOCK"})
         with pytest.raises(ValueError, match="Refund cross-year detected"):
             calculator.calculate(path)
 
@@ -142,12 +181,17 @@ class TestCfdDividendRaises:
         # No anomaly at parsing stage — the fail-fast happens in post-loop
         # kind classification.
         txns = [
-            _txn(uuid="div1", id=1, timestamp=TS_2024_01_15,
-                 symbolId="FAKE.CFD", operationType="DIVIDEND",
-                 sum="10.0", asset="FAKE.CFD"),
+            _txn(
+                uuid="div1",
+                id=1,
+                timestamp=TS_2024_01_15,
+                symbolId="FAKE.CFD",
+                operationType="DIVIDEND",
+                sum="10.0",
+                asset="FAKE.CFD",
+            ),
         ]
-        path = _write_run(tmp_path, txns,
-                          symbol_overrides={"FAKE.CFD": "CFD"})
+        path = _write_run(tmp_path, txns, symbol_overrides={"FAKE.CFD": "CFD"})
         with pytest.raises(ValueError, match="CFD/derivative dividend not supported"):
             calculator.calculate(path)
 
@@ -157,9 +201,15 @@ class TestUnknownInstrumentRaises:
         # Dividend on a symbol with no metadata and no overrides → fail-fast
         # in the post-loop classification.
         txns = [
-            _txn(uuid="div1", id=1, timestamp=TS_2024_01_15,
-                 symbolId="UNKNOWN.SYM", operationType="DIVIDEND",
-                 sum="10.0", asset="UNKNOWN.SYM"),
+            _txn(
+                uuid="div1",
+                id=1,
+                timestamp=TS_2024_01_15,
+                symbolId="UNKNOWN.SYM",
+                operationType="DIVIDEND",
+                sum="10.0",
+                asset="UNKNOWN.SYM",
+            ),
         ]
         # No symbol_overrides written → empty dict
         path = _write_run(tmp_path, txns, symbol_overrides={})
@@ -176,10 +226,17 @@ class TestG9UnknownSymbolTypeRaises:
 
     def test_dividend_on_unknown_symbolType_raises(self, tmp_path, stable_nbp_rate):
         from pit_exante.models import UnknownTypeError
+
         txns = [
-            _txn(uuid="div1", id=1, timestamp=TS_2024_01_15,
-                 symbolId="WAR.NYSE", operationType="DIVIDEND",
-                 sum="10.0", asset="WAR.NYSE"),
+            _txn(
+                uuid="div1",
+                id=1,
+                timestamp=TS_2024_01_15,
+                symbolId="WAR.NYSE",
+                operationType="DIVIDEND",
+                sum="10.0",
+                asset="WAR.NYSE",
+            ),
         ]
         # Override declares WARRANT type — not in EXANTE_TYPE_TO_KIND.
         path = _write_run(tmp_path, txns, symbol_overrides={"WAR.NYSE": "WARRANT"})
@@ -194,41 +251,83 @@ class TestG3TimezoneYearBoundary:
     """
 
     def test_late_dec_utc_lands_in_january_pl(self):
-        from datetime import date, datetime, timezone
+        from datetime import date, datetime
         from decimal import Decimal as D
+
         from pit_exante.calculator import _timestamp_date
         from pit_exante.models import Transaction
-        ts_ms = int(datetime(2024, 12, 31, 23, 30, tzinfo=timezone.utc).timestamp() * 1000)
-        t = Transaction(uuid="t", timestamp=ts_ms, value_date=None, account_id="A",
-                        symbol_id=None, operation_type="DIVIDEND", sum=D("0"),
-                        transaction_price=None, asset="USD", currency="USD",
-                        order_id=None, parent_uuid=None, comment=None, id=1)
+
+        ts_ms = int(datetime(2024, 12, 31, 23, 30, tzinfo=UTC).timestamp() * 1000)
+        t = Transaction(
+            uuid="t",
+            timestamp=ts_ms,
+            value_date=None,
+            account_id="A",
+            symbol_id=None,
+            operation_type="DIVIDEND",
+            sum=D("0"),
+            transaction_price=None,
+            asset="USD",
+            currency="USD",
+            order_id=None,
+            parent_uuid=None,
+            comment=None,
+            id=1,
+        )
         assert _timestamp_date(t) == date(2025, 1, 1)
 
     def test_early_jan_utc_stays_in_january_pl(self):
-        from datetime import date, datetime, timezone
+        from datetime import date, datetime
         from decimal import Decimal as D
+
         from pit_exante.calculator import _timestamp_date
         from pit_exante.models import Transaction
-        ts_ms = int(datetime(2025, 1, 1, 0, 30, tzinfo=timezone.utc).timestamp() * 1000)
-        t = Transaction(uuid="t", timestamp=ts_ms, value_date=None, account_id="A",
-                        symbol_id=None, operation_type="DIVIDEND", sum=D("0"),
-                        transaction_price=None, asset="USD", currency="USD",
-                        order_id=None, parent_uuid=None, comment=None, id=2)
+
+        ts_ms = int(datetime(2025, 1, 1, 0, 30, tzinfo=UTC).timestamp() * 1000)
+        t = Transaction(
+            uuid="t",
+            timestamp=ts_ms,
+            value_date=None,
+            account_id="A",
+            symbol_id=None,
+            operation_type="DIVIDEND",
+            sum=D("0"),
+            transaction_price=None,
+            asset="USD",
+            currency="USD",
+            order_id=None,
+            parent_uuid=None,
+            comment=None,
+            id=2,
+        )
         # 1:30 CET on Jan 1 → still Jan 1, year 2025.
         assert _timestamp_date(t) == date(2025, 1, 1)
 
     def test_dec_31_local_morning_stays_dec(self):
-        from datetime import date, datetime, timezone
+        from datetime import date, datetime
         from decimal import Decimal as D
+
         from pit_exante.calculator import _timestamp_date
         from pit_exante.models import Transaction
+
         # 2024-12-31 12:00 UTC → 13:00 CET → Dec 31, 2024.
-        ts_ms = int(datetime(2024, 12, 31, 12, 0, tzinfo=timezone.utc).timestamp() * 1000)
-        t = Transaction(uuid="t", timestamp=ts_ms, value_date=None, account_id="A",
-                        symbol_id=None, operation_type="DIVIDEND", sum=D("0"),
-                        transaction_price=None, asset="USD", currency="USD",
-                        order_id=None, parent_uuid=None, comment=None, id=3)
+        ts_ms = int(datetime(2024, 12, 31, 12, 0, tzinfo=UTC).timestamp() * 1000)
+        t = Transaction(
+            uuid="t",
+            timestamp=ts_ms,
+            value_date=None,
+            account_id="A",
+            symbol_id=None,
+            operation_type="DIVIDEND",
+            sum=D("0"),
+            transaction_price=None,
+            asset="USD",
+            currency="USD",
+            order_id=None,
+            parent_uuid=None,
+            comment=None,
+            id=3,
+        )
         assert _timestamp_date(t) == date(2024, 12, 31)
 
 
@@ -243,35 +342,68 @@ class TestG7ReverseSplitOrchestration:
         # Reality has 3 transactions sharing parent_uuid = "ca-parent".
         txns = [
             # Initial buy: 100 shares at $10.00 each
-            _txn(uuid="buy1", id=1, timestamp=TS_2024_01_15,
-                 valueDate="2024-01-15",
-                 symbolId="SPLIT.NYSE", operationType="TRADE",
-                 sum="100.0", transactionPrice="10.00",
-                 asset="SPLIT.NYSE", orderId="o1"),
-            _txn(uuid="buy1c", id=2, timestamp=TS_2024_01_15,
-                 valueDate="2024-01-15",
-                 symbolId="SPLIT.NYSE", operationType="TRADE",
-                 sum="-1000.0", transactionPrice=None,
-                 asset="USD", orderId="o1"),
+            _txn(
+                uuid="buy1",
+                id=1,
+                timestamp=TS_2024_01_15,
+                valueDate="2024-01-15",
+                symbolId="SPLIT.NYSE",
+                operationType="TRADE",
+                sum="100.0",
+                transactionPrice="10.00",
+                asset="SPLIT.NYSE",
+                orderId="o1",
+            ),
+            _txn(
+                uuid="buy1c",
+                id=2,
+                timestamp=TS_2024_01_15,
+                valueDate="2024-01-15",
+                symbolId="SPLIT.NYSE",
+                operationType="TRADE",
+                sum="-1000.0",
+                transactionPrice=None,
+                asset="USD",
+                orderId="o1",
+            ),
             # CORPORATE_ACTION: removal of 100 old shares
-            _txn(uuid="ca-remove", id=3, timestamp=TS_2024_01_15 + 100 * 24 * 3600 * 1000,
-                 valueDate="2024-04-25",
-                 symbolId="SPLIT.NYSE", operationType="CORPORATE ACTION",
-                 sum="-100.0", asset="SPLIT.NYSE",
-                 parentUuid="ca-parent"),
+            _txn(
+                uuid="ca-remove",
+                id=3,
+                timestamp=TS_2024_01_15 + 100 * 24 * 3600 * 1000,
+                valueDate="2024-04-25",
+                symbolId="SPLIT.NYSE",
+                operationType="CORPORATE ACTION",
+                sum="-100.0",
+                asset="SPLIT.NYSE",
+                parentUuid="ca-parent",
+            ),
             # CORPORATE_ACTION: addition of 50 new shares (transactionPrice required —
             # calculator only detects addition leg when ct.transaction_price is not None)
-            _txn(uuid="ca-add", id=4, timestamp=TS_2024_01_15 + 100 * 24 * 3600 * 1000,
-                 valueDate="2024-04-25",
-                 symbolId="SPLIT.NYSE", operationType="CORPORATE ACTION",
-                 sum="50.0", transactionPrice="20.00", asset="SPLIT.NYSE",
-                 parentUuid="ca-parent"),
+            _txn(
+                uuid="ca-add",
+                id=4,
+                timestamp=TS_2024_01_15 + 100 * 24 * 3600 * 1000,
+                valueDate="2024-04-25",
+                symbolId="SPLIT.NYSE",
+                operationType="CORPORATE ACTION",
+                sum="50.0",
+                transactionPrice="20.00",
+                asset="SPLIT.NYSE",
+                parentUuid="ca-parent",
+            ),
             # CORPORATE_ACTION: fractional cash payment for the 0.5 leftover
-            _txn(uuid="ca-cash", id=5, timestamp=TS_2024_01_15 + 100 * 24 * 3600 * 1000,
-                 valueDate="2024-04-25",
-                 symbolId="SPLIT.NYSE", operationType="CORPORATE ACTION",
-                 sum="11.0", asset="USD",
-                 parentUuid="ca-parent"),
+            _txn(
+                uuid="ca-cash",
+                id=5,
+                timestamp=TS_2024_01_15 + 100 * 24 * 3600 * 1000,
+                valueDate="2024-04-25",
+                symbolId="SPLIT.NYSE",
+                operationType="CORPORATE ACTION",
+                sum="11.0",
+                asset="USD",
+                parentUuid="ca-parent",
+            ),
         ]
         path = _write_run(tmp_path, txns, symbol_overrides={"SPLIT.NYSE": "STOCK"})
         reports, _ = calculator.calculate(path)
@@ -285,7 +417,8 @@ class TestG7ReverseSplitOrchestration:
         )
         # fractional_cash must be classified as SECURITY (papiery wartościowe)
         from pit_exante.models import InstrumentKind
+
         for e in fractional:
-            assert e.kind == InstrumentKind.SECURITY, (
-                f"fractional_cash event {e.symbol} kind {e.kind} != SECURITY"
-            )
+            assert (
+                e.kind == InstrumentKind.SECURITY
+            ), f"fractional_cash event {e.symbol} kind {e.kind} != SECURITY"

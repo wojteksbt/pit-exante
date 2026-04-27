@@ -68,7 +68,7 @@ def upo_rate(country: str) -> Decimal:
     return _COUNTRY_UPO_RATE.get(country, TAX_RATE)
 
 
-def is_below_upo_threshold(country: str, events: "list[DividendEvent]") -> bool:
+def is_below_upo_threshold(country: str, events: list[DividendEvent]) -> bool:
     """Czy kraj jest w branch'u "no cap clamping" dla limitu z art. 30a ust. 9.
 
     True gdy efektywna stawka WHT w walucie oryginalnej (nie PLN) ≤ UPO + tolerance.

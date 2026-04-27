@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import socket
 import time
 from datetime import date, timedelta
 from decimal import Decimal
@@ -71,7 +70,7 @@ def _fetch_from_api(currency: str, d: date) -> Decimal | None:
     req = Request(url, headers={"Accept": "application/json", "User-Agent": "pit-exante/1.0"})
 
     last_err: Exception | None = None
-    for attempt_index, backoff in enumerate((0,) + _RETRY_DELAYS_S):
+    for backoff in (0,) + _RETRY_DELAYS_S:
         if backoff:
             time.sleep(backoff)
         try:
@@ -85,9 +84,7 @@ def _fetch_from_api(currency: str, d: date) -> Decimal | None:
                         f"asked {d.isoformat()} ({currency})"
                     )
                 if data.get("code", "").upper() != currency.upper():
-                    raise RuntimeError(
-                        f"Currency mismatch: asked {currency}, got {data.get('code')}"
-                    )
+                    raise RuntimeError(f"Currency mismatch: asked {currency}, got {data.get('code')}")
                 return Decimal(str(rate_entry["mid"]))
         except HTTPError as e:
             if e.code == 404:
@@ -96,7 +93,7 @@ def _fetch_from_api(currency: str, d: date) -> Decimal | None:
                 last_err = e
                 continue
             raise
-        except (URLError, socket.timeout) as e:
+        except (TimeoutError, URLError) as e:
             last_err = e
             continue
 
@@ -121,8 +118,7 @@ def get_rate(currency: str, transaction_date: date) -> Decimal:
         return Decimal("1")
     if cur not in _VALID_NBP_CURRENCIES:
         raise ValueError(
-            f"Unsupported currency {currency!r}; "
-            f"expected one of {sorted(_VALID_NBP_CURRENCIES)} or PLN"
+            f"Unsupported currency {currency!r}; " f"expected one of {sorted(_VALID_NBP_CURRENCIES)} or PLN"
         )
 
     _load_cache()
@@ -140,9 +136,7 @@ def get_rate(currency: str, transaction_date: date) -> Decimal:
     d = transaction_date - timedelta(days=1)
     for i in range(_MAX_FALLBACK_DAYS):
         if d.year < _NBP_ARCHIVE_START_YEAR:
-            raise RuntimeError(
-                f"Date {d} before NBP archive (started {_NBP_ARCHIVE_START_YEAR})"
-            )
+            raise RuntimeError(f"Date {d} before NBP archive (started {_NBP_ARCHIVE_START_YEAR})")
         # On fallback steps, check legacy cache entries before hitting API.
         # First iteration (i=0) is already covered by primary_key check above.
         if i > 0:
@@ -160,8 +154,7 @@ def get_rate(currency: str, transaction_date: date) -> Decimal:
         d -= timedelta(days=1)
 
     raise RuntimeError(
-        f"No NBP rate within {_MAX_FALLBACK_DAYS} days back from "
-        f"{transaction_date} for {currency}"
+        f"No NBP rate within {_MAX_FALLBACK_DAYS} days back from " f"{transaction_date} for {currency}"
     )
 
 

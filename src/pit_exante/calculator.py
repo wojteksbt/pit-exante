@@ -7,7 +7,7 @@ import logging
 import re
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 from .classifier import classify
@@ -143,17 +143,23 @@ def _build_settlement_value_map(transactions: list[Transaction]) -> dict[str, De
     # Count instrument fills per order
     fills_per_order: dict[str, int] = defaultdict(int)
     for t in transactions:
-        if (t.operation_type == "TRADE" and t.order_id
-                and t.transaction_price is not None
-                and t.asset not in BARE_CURRENCIES):
+        if (
+            t.operation_type == "TRADE"
+            and t.order_id
+            and t.transaction_price is not None
+            and t.asset not in BARE_CURRENCIES
+        ):
             fills_per_order[t.order_id] += 1
 
     # Only build settlement map for single-fill orders
     values: dict[str, Decimal] = {}
     for t in transactions:
-        if (t.operation_type == "TRADE" and t.order_id
-                and t.asset in BARE_CURRENCIES
-                and fills_per_order.get(t.order_id, 0) == 1):
+        if (
+            t.operation_type == "TRADE"
+            and t.order_id
+            and t.asset in BARE_CURRENCIES
+            and fills_per_order.get(t.order_id, 0) == 1
+        ):
             values[t.order_id] = values.get(t.order_id, Decimal("0")) + abs(t.sum)
     return values
 
@@ -168,9 +174,8 @@ def _build_execution_date_map(transactions: list[Transaction]) -> dict[str, date
     """
     exec_dates: dict[str, date] = {}
     for t in transactions:
-        if t.operation_type == "COMMISSION" and t.order_id and t.value_date:
-            if t.order_id not in exec_dates:
-                exec_dates[t.order_id] = t.value_date
+        if t.operation_type == "COMMISSION" and t.order_id and t.value_date and t.order_id not in exec_dates:
+            exec_dates[t.order_id] = t.value_date
     return exec_dates
 
 
@@ -188,11 +193,7 @@ def _fx_commission_event(
     """
     exec_date = execution_date_map.get(t.order_id) if t.order_id else None
     tx_date = exec_date or _effective_date(t)
-    commission = (
-        commission_map.get(t.order_id, Decimal("0"))
-        if t.order_id
-        else Decimal("0")
-    )
+    commission = commission_map.get(t.order_id, Decimal("0")) if t.order_id else Decimal("0")
     if commission <= 0:
         return None
     assert t.symbol_id is not None
@@ -239,9 +240,7 @@ def _handle_corporate_action(
     addition = None
     fractional_cash = None
     for ct in ca_txns:
-        if ct.asset == ct.symbol_id or (
-            ct.symbol_id and ct.asset.startswith(ct.symbol_id.split(".")[0])
-        ):
+        if ct.asset == ct.symbol_id or (ct.symbol_id and ct.asset.startswith(ct.symbol_id.split(".")[0])):
             if ct.sum < 0:
                 removal = ct
             elif ct.sum > 0 and ct.transaction_price is not None:
@@ -255,9 +254,7 @@ def _handle_corporate_action(
     removal_date = _effective_date(removal)
     fifo_acct_removal = _normalize_account(removal.account_id)
     nbp_rate = get_rate(removal.currency, removal_date)
-    cash_amount = (
-        Decimal(str(fractional_cash.sum)) if fractional_cash else None
-    )
+    cash_amount = Decimal(str(fractional_cash.sum)) if fractional_cash else None
     cash_nbp = (
         get_rate(
             fractional_cash.currency if fractional_cash else removal.currency,
@@ -336,9 +333,7 @@ def _handle_tax_withheld(
 
     if t.operation_type == "TAX" and not t.parent_uuid and t.symbol_id:
         # TAX without parentUuid — match by timestamp proximity + symbol
-        matched = _match_tax_by_timestamp(
-            t, tax_amount, tax_pln, dividend_txns_by_symbol
-        )
+        matched = _match_tax_by_timestamp(t, tax_amount, tax_pln, dividend_txns_by_symbol)
         if not matched:
             unlinked_tax_entries.append(t)
         return
@@ -387,7 +382,9 @@ def _handle_tax_withheld(
     sign_amount = tax_amount if t.sum < 0 else -tax_amount
     sign_pln = tax_pln if t.sum < 0 else -tax_pln
     matched = _match_tax_by_timestamp(
-        t, sign_amount, sign_pln,
+        t,
+        sign_amount,
+        sign_pln,
         dividend_txns_by_symbol,
         max_delta_ms=120_000,
         symbol_override=symbol,
@@ -445,9 +442,7 @@ def _handle_tax_withheld(
             parent_div.tax_withheld -= t.sum
         else:
             parent_div.tax_withheld += tax_amount
-        parent_div.tax_withheld_pln = to_pln(
-            parent_div.tax_withheld, parent_div.nbp_rate
-        )
+        parent_div.tax_withheld_pln = to_pln(parent_div.tax_withheld, parent_div.nbp_rate)
         if parent_div.tax_withheld < 0:
             raise ValueError(
                 f"Over-refund detected: refund {t.sum} {t.currency} "
@@ -779,9 +774,7 @@ def calculate(transactions_path: str | Path) -> tuple[list[YearReport], dict]:
                 )
 
             case TaxCategory.CORPORATE_ACTION:
-                _handle_corporate_action(
-                    t, ca_txns_by_symbol, fifo, tax_events, processed_uuids
-                )
+                _handle_corporate_action(t, ca_txns_by_symbol, fifo, tax_events, processed_uuids)
 
             case TaxCategory.ROLLOVER_COST:
                 tx_date = _effective_date(t)
@@ -890,7 +883,7 @@ def calculate(transactions_path: str | Path) -> tuple[list[YearReport], dict]:
                 f"Add to data/symbols.json or "
                 f"config/symbol_overrides.json before running calculator. "
                 f"({e})"
-            )
+            ) from e
         if kind == InstrumentKind.DERIVATIVE:
             raise ValueError(
                 f"CFD/derivative dividend not supported: {div.symbol} on "
@@ -928,25 +921,13 @@ def _aggregate_by_year(
         report.pit38_events = year_tax_events
 
         # KROK 3: split events by InstrumentKind for PIT-38 wiersz 1 vs wiersz 3
-        report.papiery_wart_events = [
-            e for e in year_tax_events if e.kind == InstrumentKind.SECURITY
-        ]
-        report.pochodne_events = [
-            e for e in year_tax_events if e.kind == InstrumentKind.DERIVATIVE
-        ]
+        report.papiery_wart_events = [e for e in year_tax_events if e.kind == InstrumentKind.SECURITY]
+        report.pochodne_events = [e for e in year_tax_events if e.kind == InstrumentKind.DERIVATIVE]
 
-        report.papiery_wart_income = sum(
-            (e.income_pln for e in report.papiery_wart_events), Decimal("0")
-        )
-        report.papiery_wart_cost = sum(
-            (e.cost_pln for e in report.papiery_wart_events), Decimal("0")
-        )
-        report.pochodne_income = sum(
-            (e.income_pln for e in report.pochodne_events), Decimal("0")
-        )
-        report.pochodne_cost = sum(
-            (e.cost_pln for e in report.pochodne_events), Decimal("0")
-        )
+        report.papiery_wart_income = sum((e.income_pln for e in report.papiery_wart_events), Decimal("0"))
+        report.papiery_wart_cost = sum((e.cost_pln for e in report.papiery_wart_events), Decimal("0"))
+        report.pochodne_income = sum((e.income_pln for e in report.pochodne_events), Decimal("0"))
+        report.pochodne_cost = sum((e.cost_pln for e in report.pochodne_events), Decimal("0"))
 
         report.pit38_income = report.papiery_wart_income + report.pochodne_income
         report.pit38_cost = report.papiery_wart_cost + report.pochodne_cost
@@ -982,12 +963,8 @@ def _aggregate_by_year(
             for e in sorted_events:
                 c_income += e.gross_amount_pln
                 c_paid += e.tax_withheld_pln
-                c_due += (e.gross_amount_pln * TAX_RATE).quantize(
-                    Decimal("0.01"), rounding=ROUND_HALF_UP
-                )
-                cap_i = (e.gross_amount_pln * country_upo).quantize(
-                    Decimal("0.01"), rounding=ROUND_HALF_UP
-                )
+                c_due += (e.gross_amount_pln * TAX_RATE).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                cap_i = (e.gross_amount_pln * country_upo).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
                 cap_per_event[id(e)] = cap_i
                 c_cap += cap_i
 
@@ -1037,17 +1014,11 @@ def _aggregate_by_year(
             total_to_deduct += c_to_deduct
             total_due += c_due
 
-        report.dividends_income_pln = sum(
-            (e.gross_amount_pln for e in year_div_events), Decimal("0")
-        )
-        report.dividends_tax_paid_pln = sum(
-            (e.tax_withheld_pln for e in year_div_events), Decimal("0")
-        )
+        report.dividends_income_pln = sum((e.gross_amount_pln for e in year_div_events), Decimal("0"))
+        report.dividends_tax_paid_pln = sum((e.tax_withheld_pln for e in year_div_events), Decimal("0"))
         report.dividends_tax_due_pln = max(Decimal("0"), total_due)
         report.dividends_tax_to_deduct_pln = total_to_deduct
-        report.dividends_tax_to_pay_pln = max(
-            Decimal("0"), report.dividends_tax_due_pln - total_to_deduct
-        )
+        report.dividends_tax_to_pay_pln = max(Decimal("0"), report.dividends_tax_due_pln - total_to_deduct)
         report.dividends_by_country = per_country
 
         reports.append(report)

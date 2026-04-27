@@ -1,18 +1,17 @@
 """Unit tests for parser module (pure logic, no data dependencies)."""
 
-from datetime import date
+import sys
 from decimal import Decimal
 from pathlib import Path
 
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from pit_exante.models import Transaction
 from pit_exante.parser import (
     _build_orderid_currency_map,
     _derive_currency,
     is_instrument_trade,
 )
-from pit_exante.models import Transaction
 
 
 class TestDeriveCurrency:
@@ -118,10 +117,20 @@ class TestBuildOrderidCurrencyMap:
 class TestIsInstrumentTrade:
     def _make_trade(self, asset, price=Decimal("10"), op="TRADE"):
         return Transaction(
-            uuid="test", timestamp=0, value_date=None, account_id="X",
-            symbol_id=asset, operation_type=op, sum=Decimal("1"),
-            transaction_price=price, asset=asset, currency="USD",
-            order_id=None, parent_uuid=None, comment=None, id=0,
+            uuid="test",
+            timestamp=0,
+            value_date=None,
+            account_id="X",
+            symbol_id=asset,
+            operation_type=op,
+            sum=Decimal("1"),
+            transaction_price=price,
+            asset=asset,
+            currency="USD",
+            order_id=None,
+            parent_uuid=None,
+            comment=None,
+            id=0,
         )
 
     def test_instrument_trade_true(self):

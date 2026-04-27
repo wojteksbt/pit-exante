@@ -1,10 +1,9 @@
 """Tests for classifier module."""
 
-import pytest
+import sys
 from decimal import Decimal
 from pathlib import Path
 
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from pit_exante.classifier import classify
@@ -13,10 +12,20 @@ from pit_exante.models import TaxCategory, Transaction
 
 def _make_txn(op_type: str, amount: str = "1.0") -> Transaction:
     return Transaction(
-        uuid="test", timestamp=0, value_date=None, account_id="X",
-        symbol_id="TEST", operation_type=op_type, sum=Decimal(amount),
-        transaction_price=None, asset="TEST", currency="USD",
-        order_id=None, parent_uuid=None, comment=None, id=0,
+        uuid="test",
+        timestamp=0,
+        value_date=None,
+        account_id="X",
+        symbol_id="TEST",
+        operation_type=op_type,
+        sum=Decimal(amount),
+        transaction_price=None,
+        asset="TEST",
+        currency="USD",
+        order_id=None,
+        parent_uuid=None,
+        comment=None,
+        id=0,
     )
 
 

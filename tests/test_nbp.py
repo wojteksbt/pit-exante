@@ -1,23 +1,23 @@
 """Tests for NBP exchange rate module."""
 
 import json
-import socket
-import pytest
+import sys
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 
-import sys
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from pit_exante import nbp
 from pit_exante.nbp import (
-    get_rate,
-    _fetch_from_api,
     _RETRY_DELAYS_S,
     _VALID_NBP_CURRENCIES,
+    _fetch_from_api,
+    get_rate,
 )
 
 
@@ -25,10 +25,13 @@ def _mock_response(body: dict):
     class _Resp:
         def __enter__(self_inner):
             return self_inner
+
         def __exit__(self_inner, *args):
             return False
+
         def read(self_inner):
             return json.dumps(body).encode()
+
     return _Resp()
 
 
@@ -134,10 +137,12 @@ class TestL5Refactor:
                 url = req.full_url if hasattr(req, "full_url") else req.get_full_url()
                 calls.append(url)
                 if "2025-12-23" in url:
-                    return _mock_response({
-                        "code": "USD",
-                        "rates": [{"effectiveDate": "2025-12-23", "mid": "3.5848"}],
-                    })
+                    return _mock_response(
+                        {
+                            "code": "USD",
+                            "rates": [{"effectiveDate": "2025-12-23", "mid": "3.5848"}],
+                        }
+                    )
                 # 404 for 24.12, 25.12, 26.12 (holidays/Wigilia)
                 raise _http_error(404)
 
@@ -173,7 +178,7 @@ class TestL5Refactor:
     def test_valid_currencies_set(self):
         # Document the currency contract — if this changes, calculator may
         # need updates for handling new currencies.
-        assert _VALID_NBP_CURRENCIES == frozenset({"USD", "EUR", "CAD", "SEK"})
+        assert frozenset({"USD", "EUR", "CAD", "SEK"}) == _VALID_NBP_CURRENCIES
 
 
 class TestN3RetryBackoff:
@@ -217,7 +222,7 @@ class TestN3RetryBackoff:
         def fake_urlopen(req, timeout=10):
             calls["n"] += 1
             if calls["n"] == 1:
-                raise socket.timeout("timed out")
+                raise TimeoutError("timed out")
             return _mock_response(body)
 
         with patch("pit_exante.nbp.urlopen", side_effect=fake_urlopen):

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import csv
 import io
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
-from .models import TAX_RATE, DividendEvent, FifoLot, TaxEvent, YearReport
+from .models import TAX_RATE, FifoLot, TaxEvent, YearReport
 
 
 def _fmt(amount: Decimal, width: int = 12) -> str:
@@ -143,11 +143,19 @@ def generate_year_report(report: YearReport) -> str:
     lines.append("═" * 70)
     lines.append("")
 
-    lines.append(f"DYWIDENDY BRUTTO (do wyliczenia poz. {pos_due}):           {_fmt(report.dividends_income_pln)} PLN")
+    lines.append(
+        f"DYWIDENDY BRUTTO (do wyliczenia poz. {pos_due}):           {_fmt(report.dividends_income_pln)} PLN"
+    )
     lines.append(f"PODATEK POBRANY U ŹRÓDŁA (informacyjnie):       {_fmt(report.dividends_tax_paid_pln)} PLN")
-    lines.append(f"PODATEK POLSKI 19%:                             {_fmt(report.dividends_tax_due_pln)} PLN  → poz. {pos_due}")
-    lines.append(f"PODATEK DO ODLICZENIA (per-UPO cap):            {_fmt(report.dividends_tax_to_deduct_pln)} PLN  → poz. {pos_deduct}")
-    lines.append(f"DO ZAPŁATY W POLSCE:                            {_fmt(report.dividends_tax_to_pay_pln)} PLN  → poz. {pos_to_pay}")
+    lines.append(
+        f"PODATEK POLSKI 19%:                             {_fmt(report.dividends_tax_due_pln)} PLN  → poz. {pos_due}"
+    )
+    lines.append(
+        f"PODATEK DO ODLICZENIA (per-UPO cap):            {_fmt(report.dividends_tax_to_deduct_pln)} PLN  → poz. {pos_deduct}"
+    )
+    lines.append(
+        f"DO ZAPŁATY W POLSCE:                            {_fmt(report.dividends_tax_to_pay_pln)} PLN  → poz. {pos_to_pay}"
+    )
     lines.append("")
 
     if report.dividends_by_country:
@@ -176,13 +184,17 @@ def generate_year_report(report: YearReport) -> str:
             lines.append("─" * 126)
 
             from .country import upo_rate as _upo
+
             country_upo = _upo(country_code)
 
             for e in sorted(events, key=lambda x: x.date):
                 # ROUND_HALF_UP explicit — must match calculator.py + models.to_pln,
                 # otherwise per-row table values diverge from country aggregate
                 # for amounts ending in exactly .005 (Python default is HALF_EVEN).
-                tax_pl = max(Decimal("0"), (e.gross_amount_pln * TAX_RATE).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+                tax_pl = max(
+                    Decimal("0"),
+                    (e.gross_amount_pln * TAX_RATE).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP),
+                )
                 cap = (e.gross_amount_pln * country_upo).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
                 # deduct_pln allocated by calculator.py greedy-by-date. Σ over
                 # events == cd.tax_to_deduct_pln by construction — no branch
@@ -227,9 +239,7 @@ def generate_positions_report(
         total_cost = sum(lot.quantity * lot.price_per_unit for lot in lots)
         avg_cost = total_cost / total_qty if total_qty else Decimal("0")
         currency = lots[0].currency if lots else ""
-        lines.append(
-            f"{symbol:<16}{account_id:<16}{total_qty:>10.2f}{avg_cost:>12.4f}{currency:>8}"
-        )
+        lines.append(f"{symbol:<16}{account_id:<16}{total_qty:>10.2f}{avg_cost:>12.4f}{currency:>8}")
 
     lines.append("")
     return "\n".join(lines)
@@ -247,45 +257,60 @@ def generate_csv(
     """
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow([
-        "Rok", "Data", "Typ", "Instrument", "Konto",
-        "Przychód oryg.", "Koszt oryg.", "Waluta", "Kurs NBP",
-        "Przychód PLN", "Koszt PLN", "Zysk/Strata PLN",
-    ])
+    writer.writerow(
+        [
+            "Rok",
+            "Data",
+            "Typ",
+            "Instrument",
+            "Konto",
+            "Przychód oryg.",
+            "Koszt oryg.",
+            "Waluta",
+            "Kurs NBP",
+            "Przychód PLN",
+            "Koszt PLN",
+            "Zysk/Strata PLN",
+        ]
+    )
 
     for report in reports:
         for e in sorted(report.pit38_events, key=lambda x: x.date):
             profit = e.income_pln - e.cost_pln
-            writer.writerow([
-                report.year,
-                e.date.isoformat(),
-                e.event_type,
-                e.symbol,
-                e.account_id,
-                f"{e.income_original:.2f}",
-                f"{e.cost_original:.2f}",
-                e.currency,
-                f"{e.nbp_rate:.4f}",
-                f"{e.income_pln:.2f}",
-                f"{e.cost_pln:.2f}",
-                f"{profit:.2f}",
-            ])
+            writer.writerow(
+                [
+                    report.year,
+                    e.date.isoformat(),
+                    e.event_type,
+                    e.symbol,
+                    e.account_id,
+                    f"{e.income_original:.2f}",
+                    f"{e.cost_original:.2f}",
+                    e.currency,
+                    f"{e.nbp_rate:.4f}",
+                    f"{e.income_pln:.2f}",
+                    f"{e.cost_pln:.2f}",
+                    f"{profit:.2f}",
+                ]
+            )
 
         for e in sorted(report.dividend_events, key=lambda x: x.date):
-            writer.writerow([
-                report.year,
-                e.date.isoformat(),
-                "dividend",
-                e.symbol,
-                e.account_id,
-                f"{e.gross_amount:.2f}",
-                f"{e.tax_withheld:.2f}",
-                e.currency,
-                f"{e.nbp_rate:.4f}",
-                f"{e.gross_amount_pln:.2f}",
-                f"{e.tax_withheld_pln:.2f}",
-                f"{(e.gross_amount_pln - e.tax_withheld_pln):.2f}",
-            ])
+            writer.writerow(
+                [
+                    report.year,
+                    e.date.isoformat(),
+                    "dividend",
+                    e.symbol,
+                    e.account_id,
+                    f"{e.gross_amount:.2f}",
+                    f"{e.tax_withheld:.2f}",
+                    e.currency,
+                    f"{e.nbp_rate:.4f}",
+                    f"{e.gross_amount_pln:.2f}",
+                    f"{e.tax_withheld_pln:.2f}",
+                    f"{(e.gross_amount_pln - e.tax_withheld_pln):.2f}",
+                ]
+            )
 
     Path(output_path).write_text(output.getvalue(), encoding="utf-8")
 

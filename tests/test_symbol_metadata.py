@@ -14,7 +14,6 @@ sys.path.insert(0, str(ROOT / "src"))
 from pit_exante.models import InstrumentKind, UnknownInstrumentError, UnknownTypeError
 from pit_exante.symbol_metadata import classify, get_symbol_type
 
-
 # Minimal in-memory fixtures (independent of data/ files)
 _SYMBOLS = {
     "VIG.US": {"symbolType": "CFD", "name": "Vanguard Dividend Appreciation ETF"},
@@ -65,6 +64,7 @@ class TestClassify:
         # the API surface so a future "improvement" adding rollover-based
         # heuristic would require changing the signature (visible diff).
         import inspect
+
         sig = inspect.signature(classify)
         assert list(sig.parameters) == ["symbol_id", "symbols", "overrides"]
 

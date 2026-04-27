@@ -45,3 +45,4 @@ the old one (mark the old one's Status as `Superseded by ADR-NNNN`).
 - [ADR-0005 — Cost=0 dla fractional cash z reverse split](0005-fractional-cash-cost-zero.md)
 - [ADR-0006 — Cross-year refund wymaga manual decision](0006-cross-year-refund-manual-decision.md)
 - [ADR-0007 — NBP API jako autorytet (drop kalendarz świąt)](0007-nbp-api-authority.md)
+- [ADR-0008 — Architektura calculator.py (match/case + indeksy + helpers)](0008-calculator-architecture.md)

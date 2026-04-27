@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from decimal import Decimal
 from pathlib import Path
 
 from .calculator import calculate

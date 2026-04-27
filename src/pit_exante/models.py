@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
 
 ZERO = Decimal("0")
@@ -112,7 +112,7 @@ class TaxEvent:
     currency: str
     nbp_rate: Decimal
     details: str  # description for report
-    kind: "InstrumentKind" = None  # type: ignore[assignment]
+    kind: InstrumentKind = None  # type: ignore[assignment]
     # Set in calculator: SECURITY for stock/etf trades + commissions + fx fees;
     # DERIVATIVE for CFD trades + rollovers. Default None to allow gradual
     # migration of existing tests that construct TaxEvent without kind.

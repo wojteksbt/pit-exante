@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pit-exante"
+version = "0.1.0"
+description = "Generator rozliczenia PIT-38 / PIT-36+ZG z transakcji Exante"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+    "requests>=2.31",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+pit-exante = "pit_exante.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"
+
+# ruff: lint + format unified.
+# Enable common rule families; can be tightened over time. Tax-domain code
+# tolerates long lines occasionally for readability of formula chains, so
+# E501 is relaxed at line=110 rather than 88.
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+src = ["src", "tests"]
+exclude = ["tests/personal", "data", "output"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+    "PT",   # flake8-pytest-style
+]
+ignore = [
+    "E501",   # line-length handled by formatter; warn-only
+    "B008",   # default arg call (Decimal("0") in dataclass field defaults)
+    "SIM108", # ternary preferred — sometimes if/else reads better
+]
+
+[tool.ruff.lint.per-file-ignores]
+# tests/*: B011 (asserts ok), E402 (sys.path hack before imports — fallback
+# for ad-hoc runs without pyproject.toml on path), SIM117 (nested with
+# statements read clearer when one is patch and the other is pytest.raises),
+# PT004 (no-return fixture naming — contested rule, deprecated in newer
+# ruff; renaming would ripple through many call sites).
+"tests/*" = ["B011", "E402", "SIM117", "PT004"]

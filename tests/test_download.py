@@ -7,8 +7,6 @@ import sys
 from io import BytesIO
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -32,17 +30,20 @@ class TestFetchSymbolMetadata:
     """fetch_symbol_metadata returns parsed JSON with symbolType."""
 
     def test_returns_symbolType_for_cfd(self, monkeypatch):
-        body = json.dumps({
-            "symbolId": "VIG.US",
-            "symbolType": "CFD",
-            "name": "Vanguard Dividend Appreciation ETF",
-            "currency": "USD",
-        }).encode()
+        body = json.dumps(
+            {
+                "symbolId": "VIG.US",
+                "symbolType": "CFD",
+                "name": "Vanguard Dividend Appreciation ETF",
+                "currency": "USD",
+            }
+        ).encode()
 
         def fake_urlopen(req):
             return _FakeResponse(body)
 
         import download_transactions
+
         monkeypatch.setattr(download_transactions, "urlopen", fake_urlopen)
 
         result = download_transactions.fetch_symbol_metadata("VIG.US")
@@ -50,16 +51,19 @@ class TestFetchSymbolMetadata:
         assert result["symbolId"] == "VIG.US"
 
     def test_returns_symbolType_for_stock(self, monkeypatch):
-        body = json.dumps({
-            "symbolId": "VIG.ARCA",
-            "symbolType": "STOCK",
-            "name": "Vanguard Dividend Appreciation ETF",
-        }).encode()
+        body = json.dumps(
+            {
+                "symbolId": "VIG.ARCA",
+                "symbolType": "STOCK",
+                "name": "Vanguard Dividend Appreciation ETF",
+            }
+        ).encode()
 
         def fake_urlopen(req):
             return _FakeResponse(body)
 
         import download_transactions
+
         monkeypatch.setattr(download_transactions, "urlopen", fake_urlopen)
 
         result = download_transactions.fetch_symbol_metadata("VIG.ARCA")
@@ -72,6 +76,7 @@ class TestFetchSymbolMetadata:
             raise HTTPError(req.full_url, 404, "Not Found", {}, BytesIO(b""))
 
         import download_transactions
+
         monkeypatch.setattr(download_transactions, "urlopen", fake_urlopen)
 
         result = download_transactions.fetch_symbol_metadata("DELISTED.X")
