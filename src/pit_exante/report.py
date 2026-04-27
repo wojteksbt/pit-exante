@@ -175,10 +175,7 @@ def generate_year_report(report: YearReport) -> str:
             )
             lines.append("─" * 126)
 
-            from .country import is_below_upo_threshold, upo_rate as _upo
-            # Per-row deduction musi replikować country branch — inaczej suma per-row
-            # ≠ aggregate (USA 2025 case: 50.12 vs 50.24 PLN).
-            no_cap_branch = is_below_upo_threshold(country_code, events)
+            from .country import upo_rate as _upo
             country_upo = _upo(country_code)
 
             for e in sorted(events, key=lambda x: x.date):
@@ -187,16 +184,12 @@ def generate_year_report(report: YearReport) -> str:
                 # for amounts ending in exactly .005 (Python default is HALF_EVEN).
                 tax_pl = max(Decimal("0"), (e.gross_amount_pln * TAX_RATE).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
                 cap = (e.gross_amount_pln * country_upo).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-                if no_cap_branch:
-                    # No PLN cap clamping. Aggregate guarantees sum(WHT) ≤ c_due
-                    # because effective rate ≤ UPO 15% < PL 19%. Show full WHT
-                    # per row — sum exactly equals country aggregate. Don't clamp
-                    # to per-row PL19 (would lose ≤0.01 PLN on rows where WHT
-                    # slightly exceeds PL19 due to NBP rate spread vs annual avg).
-                    deduct = e.tax_withheld_pln
-                else:
-                    # Cap clamping (np. CA z WHT 25%) — odlicz min(WHT, cap UPO)
-                    deduct = min(e.tax_withheld_pln, cap)
+                # deduct_pln allocated by calculator.py greedy-by-date. Σ over
+                # events == cd.tax_to_deduct_pln by construction — no branch
+                # logic here, no per-row recomputation. assert non-None to
+                # surface contract violation early (calculator must allocate).
+                assert e.deduct_pln is not None, "calculator did not allocate deduct_pln"
+                deduct = e.deduct_pln
                 lines.append(
                     f"{e.date.isoformat():<12}{e.symbol:<16}"
                     f"{e.gross_amount:>10.2f} {e.currency:>4}"

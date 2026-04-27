@@ -896,6 +896,37 @@ def _aggregate_by_year(
                 # WHT > UPO (np. CA 25% > 15%) → cap do UPO w PLN
                 c_to_deduct = min(c_paid, c_cap)
 
+            # Allocate country-level deduction to events for display.
+            # No-cap branch: each row gets its full WHT (Σ = c_paid = c_to_deduct).
+            # Capped branch: each row shows min(WHT, cap_i) — natural per-row
+            # interpretation, sums to c_cap when all rows exceed cap. If the
+            # base sum < c_to_deduct (mixed-rate edge case), distribute residual
+            # chronologically to rows with WHT > base. Invariant by construction:
+            # Σ deduct_pln == c_to_deduct.
+            sorted_events = sorted(events, key=lambda x: x.date)
+            if is_below_upo_threshold(country, events):
+                for e in sorted_events:
+                    e.deduct_pln = e.tax_withheld_pln
+            else:
+                country_upo = upo_rate(country)
+                base_total = Decimal("0")
+                for e in sorted_events:
+                    cap_i = (e.gross_amount_pln * country_upo).quantize(
+                        Decimal("0.01"), rounding=ROUND_HALF_UP
+                    )
+                    e.deduct_pln = min(e.tax_withheld_pln, cap_i)
+                    base_total += e.deduct_pln
+                residual = c_to_deduct - base_total
+                for e in sorted_events:
+                    if residual <= 0:
+                        break
+                    headroom = e.tax_withheld_pln - e.deduct_pln
+                    if headroom <= 0:
+                        continue
+                    give = min(headroom, residual)
+                    e.deduct_pln += give
+                    residual -= give
+
             per_country[country] = CountryDividend(
                 country=country,
                 income_pln=c_income,

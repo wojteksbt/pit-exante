@@ -135,6 +135,10 @@ class DividendEvent:
     nbp_rate: Decimal
     comment: str
     country: str = ""
+    # Set by calculator after country-level aggregation. Greedy-by-date
+    # allocation of CountryDividend.tax_to_deduct_pln — guarantees
+    # Σ events.deduct_pln == cd.tax_to_deduct_pln by construction.
+    deduct_pln: Decimal | None = None
 
 
 @dataclass
