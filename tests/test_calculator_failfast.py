@@ -165,3 +165,127 @@ class TestUnknownInstrumentRaises:
         path = _write_run(tmp_path, txns, symbol_overrides={})
         with pytest.raises(ValueError, match="Unknown instrument"):
             calculator.calculate(path)
+
+
+class TestG9UnknownSymbolTypeRaises:
+    """G9: symbolType not in EXANTE_TYPE_TO_KIND (e.g. WARRANT, RIGHT, ETN) must
+    bubble up as UnknownTypeError through `calculate()`, not silently default.
+    Mirrors test_dividend_on_unknown_symbol_raises but exercises the post-loop
+    classification path on a symbol with metadata-but-unknown-type.
+    """
+
+    def test_dividend_on_unknown_symbolType_raises(self, tmp_path, stable_nbp_rate):
+        from pit_exante.models import UnknownTypeError
+        txns = [
+            _txn(uuid="div1", id=1, timestamp=TS_2024_01_15,
+                 symbolId="WAR.NYSE", operationType="DIVIDEND",
+                 sum="10.0", asset="WAR.NYSE"),
+        ]
+        # Override declares WARRANT type — not in EXANTE_TYPE_TO_KIND.
+        path = _write_run(tmp_path, txns, symbol_overrides={"WAR.NYSE": "WARRANT"})
+        with pytest.raises((UnknownTypeError, ValueError)):
+            calculator.calculate(path)
+
+
+class TestG3TimezoneYearBoundary:
+    """G3: timestamps near year boundary must be attributed using Polish
+    timezone (CET = UTC+1), not UTC. A timestamp at 2024-12-31 23:30 UTC is
+    2025-01-01 00:30 CET → must land in year 2025.
+    """
+
+    def test_late_dec_utc_lands_in_january_pl(self):
+        from datetime import date, datetime, timezone
+        from decimal import Decimal as D
+        from pit_exante.calculator import _timestamp_date
+        from pit_exante.models import Transaction
+        ts_ms = int(datetime(2024, 12, 31, 23, 30, tzinfo=timezone.utc).timestamp() * 1000)
+        t = Transaction(uuid="t", timestamp=ts_ms, value_date=None, account_id="A",
+                        symbol_id=None, operation_type="DIVIDEND", sum=D("0"),
+                        transaction_price=None, asset="USD", currency="USD",
+                        order_id=None, parent_uuid=None, comment=None, id=1)
+        assert _timestamp_date(t) == date(2025, 1, 1)
+
+    def test_early_jan_utc_stays_in_january_pl(self):
+        from datetime import date, datetime, timezone
+        from decimal import Decimal as D
+        from pit_exante.calculator import _timestamp_date
+        from pit_exante.models import Transaction
+        ts_ms = int(datetime(2025, 1, 1, 0, 30, tzinfo=timezone.utc).timestamp() * 1000)
+        t = Transaction(uuid="t", timestamp=ts_ms, value_date=None, account_id="A",
+                        symbol_id=None, operation_type="DIVIDEND", sum=D("0"),
+                        transaction_price=None, asset="USD", currency="USD",
+                        order_id=None, parent_uuid=None, comment=None, id=2)
+        # 1:30 CET on Jan 1 → still Jan 1, year 2025.
+        assert _timestamp_date(t) == date(2025, 1, 1)
+
+    def test_dec_31_local_morning_stays_dec(self):
+        from datetime import date, datetime, timezone
+        from decimal import Decimal as D
+        from pit_exante.calculator import _timestamp_date
+        from pit_exante.models import Transaction
+        # 2024-12-31 12:00 UTC → 13:00 CET → Dec 31, 2024.
+        ts_ms = int(datetime(2024, 12, 31, 12, 0, tzinfo=timezone.utc).timestamp() * 1000)
+        t = Transaction(uuid="t", timestamp=ts_ms, value_date=None, account_id="A",
+                        symbol_id=None, operation_type="DIVIDEND", sum=D("0"),
+                        transaction_price=None, asset="USD", currency="USD",
+                        order_id=None, parent_uuid=None, comment=None, id=3)
+        assert _timestamp_date(t) == date(2024, 12, 31)
+
+
+class TestG7ReverseSplitOrchestration:
+    """G7: end-to-end test of CORPORATE_ACTION processing — removal + addition
+    + fractional_cash payment legs, grouped by parent_uuid. Calculator must
+    apply reverse split to FIFO and book fractional_cash as a SECURITY sale.
+    """
+
+    def test_reverse_split_with_fractional_cash(self, tmp_path, stable_nbp_rate):
+        # Reverse 2:1 split: 100 shares → 50 shares + 0.5 fractional → cash payment.
+        # Reality has 3 transactions sharing parent_uuid = "ca-parent".
+        txns = [
+            # Initial buy: 100 shares at $10.00 each
+            _txn(uuid="buy1", id=1, timestamp=TS_2024_01_15,
+                 valueDate="2024-01-15",
+                 symbolId="SPLIT.NYSE", operationType="TRADE",
+                 sum="100.0", transactionPrice="10.00",
+                 asset="SPLIT.NYSE", orderId="o1"),
+            _txn(uuid="buy1c", id=2, timestamp=TS_2024_01_15,
+                 valueDate="2024-01-15",
+                 symbolId="SPLIT.NYSE", operationType="TRADE",
+                 sum="-1000.0", transactionPrice=None,
+                 asset="USD", orderId="o1"),
+            # CORPORATE_ACTION: removal of 100 old shares
+            _txn(uuid="ca-remove", id=3, timestamp=TS_2024_01_15 + 100 * 24 * 3600 * 1000,
+                 valueDate="2024-04-25",
+                 symbolId="SPLIT.NYSE", operationType="CORPORATE ACTION",
+                 sum="-100.0", asset="SPLIT.NYSE",
+                 parentUuid="ca-parent"),
+            # CORPORATE_ACTION: addition of 50 new shares (transactionPrice required —
+            # calculator only detects addition leg when ct.transaction_price is not None)
+            _txn(uuid="ca-add", id=4, timestamp=TS_2024_01_15 + 100 * 24 * 3600 * 1000,
+                 valueDate="2024-04-25",
+                 symbolId="SPLIT.NYSE", operationType="CORPORATE ACTION",
+                 sum="50.0", transactionPrice="20.00", asset="SPLIT.NYSE",
+                 parentUuid="ca-parent"),
+            # CORPORATE_ACTION: fractional cash payment for the 0.5 leftover
+            _txn(uuid="ca-cash", id=5, timestamp=TS_2024_01_15 + 100 * 24 * 3600 * 1000,
+                 valueDate="2024-04-25",
+                 symbolId="SPLIT.NYSE", operationType="CORPORATE ACTION",
+                 sum="11.0", asset="USD",
+                 parentUuid="ca-parent"),
+        ]
+        path = _write_run(tmp_path, txns, symbol_overrides={"SPLIT.NYSE": "STOCK"})
+        reports, _ = calculator.calculate(path)
+        # Must produce a report for 2024 with at least one fractional_cash event
+        r2024 = next((r for r in reports if r.year == 2024), None)
+        assert r2024 is not None, "Expected 2024 report after reverse split"
+        fractional = [e for e in r2024.pit38_events if e.event_type == "fractional_cash"]
+        assert len(fractional) >= 1, (
+            f"Expected at least one fractional_cash event; got events: "
+            f"{[(e.event_type, e.symbol) for e in r2024.pit38_events]}"
+        )
+        # fractional_cash must be classified as SECURITY (papiery wartościowe)
+        from pit_exante.models import InstrumentKind
+        for e in fractional:
+            assert e.kind == InstrumentKind.SECURITY, (
+                f"fractional_cash event {e.symbol} kind {e.kind} != SECURITY"
+            )

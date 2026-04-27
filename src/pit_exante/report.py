@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
 from .models import TAX_RATE, DividendEvent, FifoLot, TaxEvent, YearReport
@@ -182,11 +182,18 @@ def generate_year_report(report: YearReport) -> str:
             country_upo = _upo(country_code)
 
             for e in sorted(events, key=lambda x: x.date):
-                tax_pl = max(Decimal("0"), (e.gross_amount_pln * TAX_RATE).quantize(Decimal("0.01")))
-                cap = (e.gross_amount_pln * country_upo).quantize(Decimal("0.01"))
+                # ROUND_HALF_UP explicit — must match calculator.py + models.to_pln,
+                # otherwise per-row table values diverge from country aggregate
+                # for amounts ending in exactly .005 (Python default is HALF_EVEN).
+                tax_pl = max(Decimal("0"), (e.gross_amount_pln * TAX_RATE).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+                cap = (e.gross_amount_pln * country_upo).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
                 if no_cap_branch:
-                    # No cap clamping — odlicz min(WHT, PL19); suma = c_paid = aggregate
-                    deduct = min(e.tax_withheld_pln, tax_pl)
+                    # No PLN cap clamping. Aggregate guarantees sum(WHT) ≤ c_due
+                    # because effective rate ≤ UPO 15% < PL 19%. Show full WHT
+                    # per row — sum exactly equals country aggregate. Don't clamp
+                    # to per-row PL19 (would lose ≤0.01 PLN on rows where WHT
+                    # slightly exceeds PL19 due to NBP rate spread vs annual avg).
+                    deduct = e.tax_withheld_pln
                 else:
                     # Cap clamping (np. CA z WHT 25%) — odlicz min(WHT, cap UPO)
                     deduct = min(e.tax_withheld_pln, cap)
