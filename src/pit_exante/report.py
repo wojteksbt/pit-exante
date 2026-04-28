@@ -49,6 +49,229 @@ def _pit38_dividend_positions(year: int) -> tuple[int, int, int]:
     return 45, 46, 47
 
 
+def _pit38_total_to_pay_position(year: int) -> int:
+    """PIT-38 'PODATEK DO ZAPŁATY' (suma sekcji G) — pozycja w formularzu.
+
+    2020-2024 (wariant 17): poz. 49
+    2025+ (wariant 18+): poz. 51 — przesunięcie +2 spójne z sekcją G dyw.
+    Zweryfikowane na PIT-38(17) z 2024; dla 2025+ to ekstrapolacja, do potwierdzenia.
+    """
+    if year >= 2025:
+        return 51
+    return 49
+
+
+_COUNTRY_FULL_NAME = {
+    "US": "STANY ZJEDNOCZONE AMERYKI",
+    "CA": "KANADA",
+    "SE": "SZWECJA",
+}
+
+
+def _country_full_name(code: str) -> str:
+    """Pełna nazwa kraju do PIT/ZG poz. 6 (fallback to ISO code)."""
+    return _COUNTRY_FULL_NAME.get(code, code)
+
+
+def _papiery_country_breakdown(
+    report: YearReport,
+) -> dict[str, tuple[Decimal, Decimal]]:
+    """Per-kraj agregacja przychód/koszty z papierów wartościowych.
+
+    Tylko zdarzenia z income_pln > 0 (faktyczne sprzedaże). Opłaty (event_type=fee)
+    nie mają country attribution w tym modelu — sumują się tylko w łącznych
+    papiery_wart_cost. Stąd Σ per-kraj net != łączny net (różnica = opłaty).
+
+    Country wyprowadzane z giełdy w symbolu (NGE.ARCA → US, LUN.TMX → CA).
+    """
+    from .country import derive_country
+
+    breakdown: dict[str, list[Decimal]] = {}
+    for e in report.papiery_wart_events:
+        if e.income_pln <= 0:
+            continue
+        country = derive_country(e.symbol, e.currency)
+        if country == "??":
+            continue
+        if country not in breakdown:
+            breakdown[country] = [Decimal("0"), Decimal("0")]
+        breakdown[country][0] += e.income_pln
+        breakdown[country][1] += e.cost_pln
+    return {k: (v[0], v[1]) for k, v in breakdown.items()}
+
+
+def _render_pit38_filling_instructions(report: YearReport) -> list[str]:
+    """Konkretne instrukcje wypełnienia PIT-38: pole-po-polu, z numeracją 2024.
+
+    Numeracja sekcji G obsługuje shift +2 dla 2025+ (przez _pit38_dividend_positions).
+    Sekcje C/D używają numeracji 2024 — dla 2025+ pojawia się jawne ostrzeżenie.
+    """
+    pos_due, pos_deduct, pos_to_pay = _pit38_dividend_positions(report.year)
+    lines: list[str] = []
+
+    lines.append("")
+    lines.append("▌ SEKCJA A — Cel złożenia")
+    lines.append("    poz. 6 (Cel):            1 = pierwsze złożenie  |  2 = korekta")
+    lines.append("    poz. 7 (Rodzaj korekty): 1 = art. 81 OP (zwykła) — TYLKO jeśli korekta")
+    lines.append("")
+
+    if report.papiery_wart_events:
+        papiery_pl = report.papiery_wart_income - report.papiery_wart_cost
+        lines.append("▌ SEKCJA C — Dochody/straty z papierów wartościowych (art. 30b ust. 1)")
+        lines.append("    Wiersz 2 'Inne przychody':")
+        lines.append(f"      poz. 22 (Przychód):       {_fmt(report.papiery_wart_income)} PLN")
+        lines.append(f"      poz. 23 (Koszty):         {_fmt(report.papiery_wart_cost)} PLN")
+        lines.append("    Wiersz 3 'Razem':")
+        lines.append(f"      poz. 24 (Suma przychód):  {_fmt(report.papiery_wart_income)} PLN")
+        lines.append(f"      poz. 25 (Suma koszty):    {_fmt(report.papiery_wart_cost)} PLN")
+        if papiery_pl > 0:
+            lines.append(f"      poz. 26 (Dochód):         {_fmt(papiery_pl)} PLN")
+            lines.append("      poz. 27 (Strata):         puste")
+        elif papiery_pl < 0:
+            lines.append("      poz. 26 (Dochód):         puste")
+            lines.append(f"      poz. 27 (Strata):         {_fmt(-papiery_pl)} PLN")
+        else:
+            lines.append("      poz. 26-27: 0 (break-even)")
+        lines.append("")
+
+        lines.append("▌ SEKCJA D — Obliczenie zobowiązania (art. 30b ust. 1)")
+        if papiery_pl > 0:
+            podstawa = papiery_pl.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            podatek_pre = papiery_pl * TAX_RATE
+            podatek = podatek_pre.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            lines.append(f"      poz. 29 (Podstawa, do pełnych zł):  {podstawa} PLN")
+            lines.append("      poz. 30 (Stawka):                    19%")
+            lines.append(f"      poz. 31 (Podatek 19%):              {_fmt(podatek_pre)} PLN")
+            lines.append("      poz. 32 (Podatek za granicą art. 30b ust. 5a/5b): 0,00 PLN")
+            lines.append(f"      poz. 33 (Podatek należny, do pełnych zł):        {podatek} PLN")
+        else:
+            lines.append("      poz. 29 (Podstawa):       0  (strata, brak podatku)")
+            lines.append("      poz. 30-33:               0 / puste")
+        lines.append("")
+
+    if report.dividends_income_pln > 0:
+        lines.append("▌ SEKCJA G — Zryczałtowany podatek od dywidend zagr. (art. 30a)")
+        lines.append(
+            f"      poz. {pos_due} (Zryczałt. podatek 19%):      {_fmt(report.dividends_tax_due_pln)} PLN"
+        )
+        lines.append(
+            f"      poz. {pos_deduct} (Podatek za granicą do odl.): "
+            f"{_fmt(report.dividends_tax_to_deduct_pln)} PLN"
+        )
+        lines.append("        UWAGA: kwota PO LIMICIE per-kraj UPO,")
+        lines.append(f"               NIE faktyczny WHT pobrany ({_fmt(report.dividends_tax_paid_pln)} PLN)")
+        lines.append(
+            f"      poz. {pos_to_pay} (Różnica do zapłaty):         {_fmt(report.dividends_tax_to_pay_pln)} PLN"
+        )
+        lines.append("        Zaokrąglić DO PEŁNYCH GROSZY w górę")
+        lines.append("        (wyjątek z art. 63 § 1a OP dla art. 30a — NIE do pełnych zł)")
+        lines.append("")
+
+    papiery_pl = report.papiery_wart_income - report.papiery_wart_cost
+    _papiery_tax_pre = max(Decimal("0"), papiery_pl * TAX_RATE)
+    podatek_papiery = _papiery_tax_pre.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    podatek_dyw = report.dividends_tax_to_pay_pln
+    razem = podatek_papiery + podatek_dyw
+    pos_total = _pit38_total_to_pay_position(report.year)
+    lines.append(f"▌ PODATEK DO ZAPŁATY (poz. {pos_total} PIT-38)")
+    lines.append(f"      = poz. 33 ({podatek_papiery} zł) + poz. {pos_to_pay} ({_fmt(podatek_dyw)} zł)")
+    lines.append(f"      = {_fmt(razem)} PLN")
+    lines.append("")
+
+    pitzg_count = len(_papiery_country_breakdown(report))
+    lines.append("▌ SEKCJA L — Załączniki")
+    lines.append(f"      poz. 69 (Liczba załączników PIT/ZG): {pitzg_count}")
+    lines.append("")
+
+    if report.year >= 2025:
+        lines.append("⚠ UWAGA 2025+: pozycje sekcji G przesunięte o +2 (45→47, 46→48, 47→49,")
+        lines.append("  total 49→51). Sekcje C i D prawdopodobnie bez zmian. Zweryfikuj na")
+        lines.append("  aktualnym formularzu PIT-38 (wariant ≥18).")
+        lines.append("")
+
+    return lines
+
+
+def _render_pitzg_attachments(report: YearReport) -> list[str]:
+    """Per-kraj rekomendacje załączników PIT/ZG z konkretnymi liczbami.
+
+    Reguła prawna: PIT/ZG wymagany dla art. 27 ust. 8/9/9a, art. 30b ust. 5a/5b/5e/5f,
+    art. 30c ust. 4/5, art. 30e ust. 8/9. NIE wymagany dla art. 30a (dywidendy).
+    """
+    lines: list[str] = []
+    lines.append("")
+
+    breakdown = _papiery_country_breakdown(report)
+    dividend_countries = set(report.dividends_by_country.keys())
+
+    if not breakdown and not dividend_countries:
+        lines.append("  Brak dochodów zagranicznych — żaden PIT/ZG nie jest wymagany.")
+        lines.append("")
+        return lines
+
+    for pitzg_idx, country in enumerate(sorted(breakdown), start=1):
+        country_name = _country_full_name(country)
+        income, cost = breakdown[country]
+        net = income - cost
+        dochod_pitzg = max(net, Decimal("0"))
+
+        lines.append(f"▌ PIT/ZG #{pitzg_idx} — {country_name} ({country}) — WYMAGANY")
+        lines.append("   Powód: papiery wartościowe sprzedane w tym kraju")
+        lines.append("          → art. 30b ust. 5a/5b ustawy o PIT")
+        lines.append("")
+        lines.append("   Sekcja A — Dane identyfikacyjne podatnika:")
+        lines.append("     Imię, nazwisko, data urodzenia, NIP/PESEL — Twoje dane")
+        lines.append("")
+        lines.append("   Sekcja B — Państwo:")
+        lines.append(f"     poz. 6 (Państwo): {country_name}")
+        lines.append(f"     poz. 7 (Kod):     {country}")
+        lines.append("")
+        lines.append("   Sekcja C.3 (DOCHODY ROZLICZANE W PIT-38):")
+        lines.append(f"     poz. 29 (Dochód art. 30b ust. 5a/5b):  {_fmt(dochod_pitzg)} PLN")
+        if net < 0:
+            lines.append(f"        (kraj na minusie {_fmt(-net)} PLN; przychód był → wpisujemy 0,00)")
+        elif net == 0:
+            lines.append("        (break-even)")
+        lines.append("     poz. 30 (Podatek za granicą):           0,00 PLN")
+        lines.append("        (typowo brak WHT od kapitałowych dla nierezydentów PL)")
+        lines.append("     poz. 31 (Dochód art. 30b ust. 5e/5f, waluty wirtualne): puste")
+        lines.append("     poz. 32 (Podatek za granicą od poz. 31):                puste")
+        lines.append("")
+        lines.append("   Sekcje C.1, C.2, C.4 (PIT-36/L/39): puste")
+        lines.append("")
+
+    only_dyw = dividend_countries - set(breakdown)
+    for country in sorted(only_dyw):
+        country_name = _country_full_name(country)
+        cd = report.dividends_by_country[country]
+        c_to_pay = max(Decimal("0"), cd.tax_due_pln - cd.tax_to_deduct_pln)
+
+        lines.append(f"▌ {country_name} ({country}) — PIT/ZG NIE WYMAGANY")
+        lines.append(f"   Powód: tylko dywidendy z {country_name} (art. 30a ust. 1 pkt 1)")
+        lines.append("          PIT/ZG dotyczy art. 27, 30b, 30c, 30e — NIE art. 30a")
+        lines.append("   Dane już ujęte zbiorczo w PIT-38 sekcji G powyżej.")
+        lines.append("")
+        lines.append(
+            f"   (Per-kraj: brutto {_fmt(cd.income_pln)} PLN | "
+            f"WHT {_fmt(cd.tax_paid_pln)} PLN | "
+            f"do odliczenia {_fmt(cd.tax_to_deduct_pln)} PLN | "
+            f"do zapłaty {_fmt(c_to_pay)} PLN)"
+        )
+        lines.append("")
+
+    fee_costs = sum(
+        (e.cost_pln for e in report.papiery_wart_events if e.event_type == "fee"),
+        Decimal("0"),
+    )
+    if fee_costs > 0:
+        lines.append(f"ℹ Opłaty brokera ({_fmt(fee_costs)} PLN) wliczone w łączną poz. 23 PIT-38,")
+        lines.append("  ale NIE atrybuowane do kraju w tym narzędziu (broker = Cypr formalnie).")
+        lines.append("  Stąd Σ poz. 29 PIT/ZG < |poz. 27 PIT-38| o tę kwotę.")
+        lines.append("")
+
+    return lines
+
+
 def generate_year_report(report: YearReport) -> str:
     """Generate text report for a single tax year — three PIT-38 sections."""
     lines: list[str] = []
@@ -58,7 +281,7 @@ def generate_year_report(report: YearReport) -> str:
     # ───────────────────────────────────────────────────────────────
     lines.append("═" * 70)
     lines.append(f" Papiery wartościowe — Rok {report.year}")
-    lines.append(" → PIT-38 sekcja C wiersz 1 (PIT-8C poz. 23-24)")
+    lines.append(" → PIT-38 sekcja C wiersz 2 'Inne przychody' (poz. 22-23)")
     lines.append("═" * 70)
     lines.append("")
     lines.append(f"PRZYCHÓD:                                      {_fmt(report.papiery_wart_income)} PLN")
@@ -86,7 +309,7 @@ def generate_year_report(report: YearReport) -> str:
     # ───────────────────────────────────────────────────────────────
     lines.append("═" * 70)
     lines.append(f" Instrumenty pochodne — Rok {report.year}")
-    lines.append(" → PIT-38 sekcja C wiersz 3 (PIT-8C poz. 27-28)")
+    lines.append(" → PIT-38 sekcja C wiersz 2 'Inne przychody' (poz. 22-23, sumują z papierami)")
     lines.append("═" * 70)
     lines.append("")
     if report.pochodne_events:
@@ -215,6 +438,22 @@ def generate_year_report(report: YearReport) -> str:
             lines.append("─" * 126)
             lines.append("")
     lines.append("")
+
+    # ───────────────────────────────────────────────────────────────
+    # INSTRUKCJA WYPEŁNIENIA PIT-38 — co wpisać w jaką komórkę
+    # ───────────────────────────────────────────────────────────────
+    lines.append("═" * 70)
+    lines.append(f" INSTRUKCJA WYPEŁNIENIA PIT-38 — Rok {report.year}")
+    lines.append("═" * 70)
+    lines.extend(_render_pit38_filling_instructions(report))
+
+    # ───────────────────────────────────────────────────────────────
+    # ZAŁĄCZNIKI PIT/ZG — które kraje, z jakimi liczbami, dlaczego
+    # ───────────────────────────────────────────────────────────────
+    lines.append("═" * 70)
+    lines.append(f" ZAŁĄCZNIKI PIT/ZG — Rok {report.year}")
+    lines.append("═" * 70)
+    lines.extend(_render_pitzg_attachments(report))
 
     return "\n".join(lines)
 
