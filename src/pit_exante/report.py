@@ -191,12 +191,25 @@ def _check_pit8c_reconciliation(report: YearReport) -> None:
     Tool autorytatywny dla wartości (art. 11a ust. 2). PIT-8C autorytatywny
     dla istnienia obowiązku informacyjnego. Rozjazd > 5% = nie-metodologiczny —
     możliwy bug klasyfikatora STOCK/CFD lub brakujące transakcje.
+
+    Edge case (review B-Step7-2): pit8c degenerate (oba 0) + tool ma dane →
+    abort z komunikatem o niespójności (loader pozwala 0/0 jako technical
+    valid input, ale nie ma sensu z transakcjami w tool).
     """
     pit8c = report.pit8c
     if pit8c is None:
         return
     income_corr = report.papiery_wart_income - pit8c.poz_35_income_pln
     cost_corr = report.papiery_wart_cost - pit8c.poz_36_cost_pln
+    if pit8c.poz_35_income_pln == 0 and pit8c.poz_36_cost_pln == 0:
+        if report.papiery_wart_income > 0 or report.papiery_wart_cost > 0:
+            raise Pit8CReconciliationError(
+                f"PIT-8C dla {report.year} ma zerowe poz. 35/36, ale tool widzi "
+                f"transakcje (income={report.papiery_wart_income}, "
+                f"cost={report.papiery_wart_cost}). Niespójność — sprawdź czy "
+                f"PIT-8C dotyczy właściwego roku/brokera lub usuń config."
+            )
+        return  # both 0 + tool 0 = degenerate but consistent; no abort
     if pit8c.poz_35_income_pln > 0:
         ratio = abs(income_corr) / pit8c.poz_35_income_pln
         if ratio > _RECONCILIATION_TOLERANCE:
@@ -531,9 +544,15 @@ def _render_pitzg_attachments(report: YearReport) -> list[str]:
         Decimal("0"),
     )
     if fee_costs > 0:
-        lines.append(f"ℹ Opłaty brokera ({_fmt(fee_costs)} PLN) wliczone w łączną poz. 23 PIT-38,")
+        # Year/path-aware: fees w wierszu 2 (path A, poz. 23) lub wierszu 1 (path B, poz. 21).
+        # Strata position: w17 → poz. 27, w18 → poz. 29.
+        has_pit8c = report.pit8c is not None
+        pos_c = _pit38_section_c_positions(report.year, has_pit8c=has_pit8c)
+        fees_pos = pos_c["wiersz_1_cost"] if has_pit8c else pos_c["wiersz_2_cost"]
+        strata_pos = pos_c["razem_strata"]
+        lines.append(f"ℹ Opłaty brokera ({_fmt(fee_costs)} PLN) wliczone w łączną poz. {fees_pos} PIT-38,")
         lines.append("  ale NIE atrybuowane do kraju w tym narzędziu (broker = Cypr formalnie).")
-        lines.append("  Stąd Σ poz. 29 PIT/ZG < |poz. 27 PIT-38| o tę kwotę.")
+        lines.append(f"  Stąd Σ poz. 29 PIT/ZG < |poz. {strata_pos} PIT-38| o tę kwotę.")
         lines.append("")
 
     return lines
@@ -830,8 +849,15 @@ def write_reports(
     reports: list[YearReport],
     positions: dict[tuple[str, str], list[FifoLot]],
     output_dir: str | Path,
+    *,
+    stock_income_correction: bool = True,
 ) -> list[Path]:
-    """Write all reports to output directory."""
+    """Write all reports to output directory.
+
+    ``stock_income_correction`` (D6 default = True) plumbed to
+    ``generate_year_report`` for ścieżki B (z PIT-8C). CLI flag
+    ``--no-stock-income-correction`` (Step 8) wstrzykuje False.
+    """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -839,7 +865,7 @@ def write_reports(
 
     for report in reports:
         # Year report
-        text = generate_year_report(report)
+        text = generate_year_report(report, stock_income_correction=stock_income_correction)
 
         # Add positions for years that have them
         text += generate_positions_report(positions, report.year)

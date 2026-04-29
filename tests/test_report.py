@@ -1095,6 +1095,32 @@ class TestPit38SciezkaBPit8c:
         except Exception:
             pass  # Other exceptions OK — we're checking only for ZeroDivisionError
 
+    def test_abort_when_pit8c_zero_zero_but_tool_has_data(self):
+        # Step 7 B2 fix — degenerate PIT-8C config + non-zero tool = niespójność
+        from pit_exante.pit8c import Pit8CReconciliationError
+
+        r = self._make_report(
+            pit8c_inc="0.00",
+            pit8c_cost="0.00",
+            papiery_inc="100.00",
+            papiery_cost="50.00",
+        )
+        with pytest.raises(Pit8CReconciliationError, match="zerowe poz. 35/36"):
+            self._render(r)
+
+    def test_no_abort_when_pit8c_zero_zero_and_tool_zero(self):
+        # Step 7 B2 — zero/zero + tool zero is degenerate but consistent (no abort)
+        r = self._make_report(
+            pit8c_inc="0.00",
+            pit8c_cost="0.00",
+            papiery_inc="0.00",
+            papiery_cost="0.00",
+            pochodne_inc="0.00",
+            pochodne_cost="0.00",
+        )
+        # Should not raise
+        self._render(r)
+
 
 class TestCsvOutput:
     """G4: CSV output schema, row counts, sum reconciliation."""
