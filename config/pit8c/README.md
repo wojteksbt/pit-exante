@@ -25,14 +25,18 @@ Każdy plik `{year}.json`:
 | Pole | Typ | Required | Walidacja |
 |---|---|---|---|
 | `year` | int | ✅ | musi == liczba w nazwie pliku, musi ≥ 2025 |
-| `poz_35_income_pln` | string | ✅ | format `\d+\.\d{2}`, ≥ 0 |
-| `poz_36_cost_pln` | string | ✅ | format `\d+\.\d{2}`, ≥ 0 |
+| `poz_35_income_pln` | **string** | ✅ | Decimal-parseable, ≥ 0 (zalecany format z PDF: `"70218.00"`) |
+| `poz_36_cost_pln` | **string** | ✅ | Decimal-parseable, ≥ 0 (zalecany format z PDF: `"73639.00"`) |
 | `issuer_name` | string | optional | display only |
 | `issuer_nip` | string | optional | display only |
 | `notes` | string | optional | wolny tekst |
 
 Edge case: `poz_35==0 AND poz_36>0` jest odrzucany (niemożliwy PIT-8C).
-Wartości jako stringi — chroni precyzję Decimal (brak float roundtrip).
+Wartości MUSZĄ być stringami (loader explicit type-checks `isinstance(val, str)`)
+— chroni precyzję Decimal (brak float roundtrip). JSON numbers, ints, null są
+odrzucane z `Pit8CConfigError("musi być stringiem")`. Loader nie enforce'uje
+sztywnego regexu `\d+\.\d{2}` — `"100"`, `"100.5"`, `"100.123"` też przejdą,
+ale dla audytowalności zachowaj format z PDF (2 grosze).
 
 ---
 
