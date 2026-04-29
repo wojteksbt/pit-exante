@@ -557,6 +557,30 @@ class TestPit38Wariant18FallbackPath:
             instr = text[idx:]
             assert "UWAGA wariant 18" not in instr, f"Year {year}: spurious w18 banner"
 
+    def test_warn_banner_suppressed_for_path_b(self, all_year_reports):
+        """Has PIT-8C → ścieżka B → no "brak config" banner."""
+        from pit_exante.models import PitEightCInfo
+        from pit_exante.report import _render_pit38_filling_instructions
+
+        for year, _text, r in all_year_reports:
+            if year < 2025:
+                continue
+            # Programatically attach a small PIT-8C config to test path B
+            r.pit8c = PitEightCInfo(
+                year=year,
+                poz_35_income_pln=r.papiery_wart_income,
+                poz_36_cost_pln=r.papiery_wart_cost,
+                issuer_name="Test Broker",
+            )
+            try:
+                lines = _render_pit38_filling_instructions(r)
+                rendered = "\n".join(lines)
+                assert "UWAGA wariant 18: brak config" not in rendered
+            finally:
+                r.pit8c = None  # restore
+            return
+        pytest.skip("No w18 year for path B test")
+
     def test_warn_banner_suppressed_when_no_sekcja_c(self, all_year_reports):
         """Year ≥ 2025 ale brak transakcji → brak SEKCJA C → brak banneru."""
         for year, text, r in all_year_reports:
@@ -900,6 +924,176 @@ class TestQuantizeUsesHalfUp:
                     f"Python default HALF_EVEN diverges from calculator's HALF_UP for .005 values. "
                     f"Line: {stripped!r}"
                 )
+
+
+class TestPit38SciezkaBPit8c:
+    """Step 6 — ścieżka B (z PIT-8C config). Synthetic YearReport+pit8c.
+
+    Wariant 18 z PIT-8C: wiersz 1 PIT-8C (poz. 20-21 = tool wins),
+    wiersz 2 inne (CFD + opt. korekta STOCK), DIAGNOSTYKA na końcu.
+    ABORT gdy rozjazd > 5%. D6 default vs OPT-OUT param.
+    """
+
+    def _make_report(
+        self,
+        *,
+        year: int = 2025,
+        papiery_inc: str = "70388.62",
+        papiery_cost: str = "76134.80",
+        pochodne_inc: str = "11844.59",
+        pochodne_cost: str = "11799.76",
+        pit8c_inc: str = "70218.00",
+        pit8c_cost: str = "73639.00",
+        issuer: str = "Test Broker",
+    ):
+        from pit_exante.models import PitEightCInfo, YearReport
+
+        r = YearReport(year=year)
+        r.papiery_wart_income = Decimal(papiery_inc)
+        r.papiery_wart_cost = Decimal(papiery_cost)
+        r.pochodne_income = Decimal(pochodne_inc)
+        r.pochodne_cost = Decimal(pochodne_cost)
+        r.pit8c = PitEightCInfo(
+            year=year,
+            poz_35_income_pln=Decimal(pit8c_inc),
+            poz_36_cost_pln=Decimal(pit8c_cost),
+            issuer_name=issuer,
+        )
+        return r
+
+    def _render(self, r, **kwargs):
+        from pit_exante.report import _render_pit38_filling_instructions
+
+        return "\n".join(_render_pit38_filling_instructions(r, **kwargs))
+
+    def test_wiersz_1_pit8c_section_present(self):
+        r = self._make_report()
+        text = self._render(r)
+        assert "Wiersz 1 (PIT-8C cz. D od Test Broker):" in text
+        assert "poz. 20 (Przychód)" in text
+        assert "poz. 21 (Koszty)" in text
+
+    def test_poz_20_uses_tool_value_not_pit8c(self):
+        # D7 — tool zawsze wpisuje swoją liczbę
+        r = self._make_report(papiery_inc="70388.62", pit8c_inc="70218.00")
+        text = self._render(r)
+        assert "70,388.62 PLN" in text  # tool value
+        # PIT-8C value powinna pojawić się w breakdown
+        assert "PIT-8C poz. 35:" in text
+        assert "70,218.00" in text
+
+    def test_poz_20_breakdown_shows_difference(self):
+        r = self._make_report(papiery_inc="70388.62", pit8c_inc="70218.00")
+        text = self._render(r)
+        assert "+ różnica (tool − PIT-8C):        " in text
+        assert "170.62" in text  # the difference
+
+    def test_poz_20_includes_art_11a_citation(self):
+        r = self._make_report()
+        text = self._render(r)
+        assert "art. 11a ust. 2" in text
+
+    def test_poz_21_includes_broszura_mf_citation_when_cost_corr_positive(self):
+        # cost_corr > 0 — tool > PIT-8C → cytat broszury MF
+        r = self._make_report(papiery_cost="76134.80", pit8c_cost="73639.00")
+        text = self._render(r)
+        assert "Broszura MF do PIT-38, str. 4" in text
+        assert "niewykazanych przez podmiot" in text
+
+    def test_poz_21_omits_broszura_when_cost_corr_zero(self):
+        # cost_corr == 0 — żaden cytat nie potrzebny (mimo że tool wins)
+        r = self._make_report(papiery_cost="73639.00", pit8c_cost="73639.00")
+        text = self._render(r)
+        assert "Broszura MF" not in text
+
+    def test_d6_default_includes_korekta_in_poz_22(self):
+        # D6 default = True — gdy income_corr > 0, dodaj do poz. 22
+        r = self._make_report(papiery_inc="70388.62", pit8c_inc="70218.00", pochodne_inc="11844.59")
+        text = self._render(r, stock_income_correction=True)
+        # poz. 22 = 11844.59 (CFD) + 170.62 (korekta) = 12015.21
+        assert "12,015.21 PLN" in text
+        assert "+ korekta STOCK (D6 default):" in text
+
+    def test_d6_optout_excludes_korekta_from_poz_22(self):
+        # D6 OPT-OUT — poz. 22 = pochodne tylko (matches filed 2025)
+        r = self._make_report(papiery_inc="70388.62", pit8c_inc="70218.00", pochodne_inc="11844.59")
+        text = self._render(r, stock_income_correction=False)
+        # poz. 22 = 11844.59 (CFD only, NO korekta)
+        # Should appear as "poz. 22 (Przychód):       11,844.59 PLN" — match the line
+        # We need to check that 12015.21 does NOT appear and 11844.59 is referenced
+        lines = text.split("\n")
+        poz_22_line = next((line for line in lines if "poz. 22 (Przychód)" in line), None)
+        assert poz_22_line is not None
+        assert "11,844.59" in poz_22_line
+        assert "12,015.21" not in poz_22_line
+
+    def test_wiersz_3_zwolnione_zero(self):
+        r = self._make_report()
+        text = self._render(r)
+        assert "Wiersz 3 'Zwolnione art. 21 ust. 1 pkt 105a':" in text
+        assert "poz. 24 (Przychód):              0,00 PLN" in text
+        assert "poz. 25 (Koszty):                0,00 PLN" in text
+
+    def test_wiersz_4_razem_at_poz_26_29(self):
+        r = self._make_report()
+        text = self._render(r)
+        assert "Wiersz 4 'Razem':" in text
+        assert "poz. 26 (Suma przychód)" in text
+        assert "poz. 27 (Suma koszty)" in text
+
+    def test_diagnostyka_section_present(self):
+        r = self._make_report()
+        text = self._render(r)
+        assert "DIAGNOSTYKA — tool (art. 11a ust. 2) vs PIT-8C broker" in text
+        assert "poz. 20 (przychód):" in text  # diag table
+        assert "poz. 21 (koszty):" in text  # diag table
+
+    def test_diagnostyka_omitted_for_path_a(self):
+        # No PIT-8C → no DIAGNOSTYKA
+        from pit_exante.models import YearReport
+
+        r = YearReport(year=2025)
+        r.papiery_wart_income = Decimal("100")
+        r.papiery_wart_cost = Decimal("50")
+        # papiery_wart_events empty so sekcja C path A doesn't render either,
+        # but DIAGNOSTYKA gating is on has_pit8c, not events. So:
+        text = self._render(r)
+        assert "DIAGNOSTYKA" not in text
+
+    def test_abort_on_income_correction_above_5pct(self):
+        from pit_exante.pit8c import Pit8CReconciliationError
+
+        # tool=70000, pit8c=10000 → corr 60000, ratio 600% — ABORT
+        r = self._make_report(papiery_inc="70000.00", pit8c_inc="10000.00")
+        with pytest.raises(Pit8CReconciliationError, match="Rozjazd przychodu"):
+            self._render(r)
+
+    def test_abort_on_cost_correction_above_5pct(self):
+        from pit_exante.pit8c import Pit8CReconciliationError
+
+        # tool=80000, pit8c=10000 → corr 70000, ratio 700% — ABORT
+        r = self._make_report(papiery_cost="80000.00", pit8c_cost="10000.00")
+        with pytest.raises(Pit8CReconciliationError, match="Rozjazd kosztów"):
+            self._render(r)
+
+    def test_no_abort_when_within_5pct_tolerance(self):
+        # User's actual: 70388.62 vs 70218.00 = 0.24% — well within 5%
+        r = self._make_report()
+        # Should not raise
+        self._render(r)
+
+    def test_no_abort_when_pit8c_inc_is_zero(self):
+        # Edge: pit8c poz_35 = 0 → division skipped, no abort
+        r = self._make_report(pit8c_inc="0.00")
+        # Note: poz_35==0 AND poz_36>0 is rejected by loader, but this test
+        # constructs PitEightCInfo directly — testing the renderer's
+        # division-by-zero guard.
+        try:
+            self._render(r)
+        except ZeroDivisionError:
+            pytest.fail("Should not raise ZeroDivisionError for pit8c_inc=0")
+        except Exception:
+            pass  # Other exceptions OK — we're checking only for ZeroDivisionError
 
 
 class TestCsvOutput:

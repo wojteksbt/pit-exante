@@ -20,6 +20,15 @@ class Pit8CConfigError(ValueError):
     """Raised when PIT-8C config is malformed, invalid, or inconsistent."""
 
 
+class Pit8CReconciliationError(ValueError):
+    """Raised when tool's calculated values diverge from PIT-8C beyond tolerance.
+
+    Per plan §6.1 D9: rozjazd > 5% któregokolwiek z poz. 35 (przychód) /
+    poz. 36 (koszty) — generacja PIT-38 zatrzymana, wymagana manualna analiza
+    per-symbol (np. via przyszłego ``audit-classifier`` sub-command).
+    """
+
+
 def load_pit8c(year: int, config_dir: Path) -> PitEightCInfo | None:
     """Load PIT-8C cz. D info from ``{config_dir}/{year}.json``.
 
