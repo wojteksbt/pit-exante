@@ -183,12 +183,21 @@ def _papiery_country_breakdown(
 
 
 def _render_pit38_filling_instructions(report: YearReport) -> list[str]:
-    """Konkretne instrukcje wypełnienia PIT-38: pole-po-polu, z numeracją 2024.
+    """Konkretne instrukcje wypełnienia PIT-38, year-aware.
 
-    Numeracja sekcji G obsługuje shift +2 dla 2025+ (przez _pit38_dividend_positions).
-    Sekcje C/D używają numeracji 2024 — dla 2025+ pojawia się jawne ostrzeżenie.
+    Wariant 17 (rok ≤ 2024): sekcja C 22-27, sekcja D 29-33, sekcja L poz. 69.
+    Wariant 18 (rok ≥ 2025) ścieżka A (bez PIT-8C): sekcja C 22-29 (z wierszem
+    3 zwolnione 0,00 i wierszem 4 razem), sekcja D 31-35, sekcja L poz. 72.
+    Wariant 18 ścieżka B (z PIT-8C) — ujęte w Step 6 (renderer separate path).
     """
+    has_pit8c = report.pit8c is not None
     pos_due, pos_deduct, pos_to_pay = _pit38_dividend_positions(report.year)
+    pos_c = _pit38_section_c_positions(report.year, has_pit8c=has_pit8c)
+    pos_d = _pit38_section_d_positions(report.year)
+    pos_pitzg = _pit38_pitzg_count_position(report.year)
+    pos_total = _pit38_total_to_pay_position(report.year)
+    razem_wiersz_num = 4 if report.year >= 2025 else 3
+
     lines: list[str] = []
 
     lines.append("")
@@ -197,38 +206,53 @@ def _render_pit38_filling_instructions(report: YearReport) -> list[str]:
     lines.append("    poz. 7 (Rodzaj korekty): 1 = art. 81 OP (zwykła) — TYLKO jeśli korekta")
     lines.append("")
 
-    if report.papiery_wart_events:
-        papiery_pl = report.papiery_wart_income - report.papiery_wart_cost
+    # SEKCJA C — łączymy papiery_wart + pochodne dla wiersza 2 (ścieżka A:
+    # bez PIT-8C wiersza 1). Dla wariantu 17 (≤2024) pochodne historycznie =0
+    # u tego usera, więc zachowujemy byte-identyczne wyjście vs snapshot.
+    inne_inc = report.papiery_wart_income + report.pochodne_income
+    inne_cost = report.papiery_wart_cost + report.pochodne_cost
+    if report.papiery_wart_events or report.pochodne_events:
+        razem_pl = inne_inc - inne_cost  # ścieżka A: razem = inne (zwolnione=0)
         lines.append("▌ SEKCJA C — Dochody/straty z papierów wartościowych (art. 30b ust. 1)")
         lines.append("    Wiersz 2 'Inne przychody':")
-        lines.append(f"      poz. 22 (Przychód):       {_fmt(report.papiery_wart_income)} PLN")
-        lines.append(f"      poz. 23 (Koszty):         {_fmt(report.papiery_wart_cost)} PLN")
-        lines.append("    Wiersz 3 'Razem':")
-        lines.append(f"      poz. 24 (Suma przychód):  {_fmt(report.papiery_wart_income)} PLN")
-        lines.append(f"      poz. 25 (Suma koszty):    {_fmt(report.papiery_wart_cost)} PLN")
-        if papiery_pl > 0:
-            lines.append(f"      poz. 26 (Dochód):         {_fmt(papiery_pl)} PLN")
-            lines.append("      poz. 27 (Strata):         puste")
-        elif papiery_pl < 0:
-            lines.append("      poz. 26 (Dochód):         puste")
-            lines.append(f"      poz. 27 (Strata):         {_fmt(-papiery_pl)} PLN")
+        lines.append(f"      poz. {pos_c['wiersz_2_inc']} (Przychód):       {_fmt(inne_inc)} PLN")
+        lines.append(f"      poz. {pos_c['wiersz_2_cost']} (Koszty):         {_fmt(inne_cost)} PLN")
+        if report.year >= 2025:
+            lines.append("    Wiersz 3 'Zwolnione art. 21 ust. 1 pkt 105a':")
+            lines.append(f"      poz. {pos_c['wiersz_3_inc']} (Przychód):              0,00 PLN")
+            lines.append(f"      poz. {pos_c['wiersz_3_cost']} (Koszty):                0,00 PLN")
+        lines.append(f"    Wiersz {razem_wiersz_num} 'Razem':")
+        lines.append(f"      poz. {pos_c['razem_inc']} (Suma przychód):  {_fmt(inne_inc)} PLN")
+        lines.append(f"      poz. {pos_c['razem_cost']} (Suma koszty):    {_fmt(inne_cost)} PLN")
+        if razem_pl > 0:
+            lines.append(f"      poz. {pos_c['razem_dochod']} (Dochód):         {_fmt(razem_pl)} PLN")
+            lines.append(f"      poz. {pos_c['razem_strata']} (Strata):         puste")
+        elif razem_pl < 0:
+            lines.append(f"      poz. {pos_c['razem_dochod']} (Dochód):         puste")
+            lines.append(f"      poz. {pos_c['razem_strata']} (Strata):         {_fmt(-razem_pl)} PLN")
         else:
-            lines.append("      poz. 26-27: 0 (break-even)")
+            lines.append(f"      poz. {pos_c['razem_dochod']}-{pos_c['razem_strata']}: 0 (break-even)")
         lines.append("")
 
         lines.append("▌ SEKCJA D — Obliczenie zobowiązania (art. 30b ust. 1)")
-        if papiery_pl > 0:
-            podstawa = papiery_pl.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-            podatek_pre = papiery_pl * TAX_RATE
-            podatek = podatek_pre.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-            lines.append(f"      poz. 29 (Podstawa, do pełnych zł):  {podstawa} PLN")
-            lines.append("      poz. 30 (Stawka):                    19%")
-            lines.append(f"      poz. 31 (Podatek 19%):              {_fmt(podatek_pre)} PLN")
-            lines.append("      poz. 32 (Podatek za granicą art. 30b ust. 5a/5b): 0,00 PLN")
-            lines.append(f"      poz. 33 (Podatek należny, do pełnych zł):        {podatek} PLN")
+        if razem_pl > 0:
+            podstawa = razem_pl.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+            podatek_pre = razem_pl * TAX_RATE  # poz. podatek_dochodu — zł, gr (NOT rounded)
+            podatek = podatek_pre.quantize(Decimal("1"), rounding=ROUND_HALF_UP)  # poz. nalezny — pełne zł
+            lines.append(f"      poz. {pos_d['podstawa']} (Podstawa, do pełnych zł):  {podstawa} PLN")
+            lines.append(f"      poz. {pos_d['stawka']} (Stawka):                    19%")
+            lines.append(
+                f"      poz. {pos_d['podatek_dochodu']} (Podatek 19%):              {_fmt(podatek_pre)} PLN"
+            )
+            lines.append(
+                f"      poz. {pos_d['podatek_za_granica']} (Podatek za granicą art. 30b ust. 5a/5b): 0,00 PLN"
+            )
+            lines.append(
+                f"      poz. {pos_d['podatek_nalezny']} (Podatek należny, do pełnych zł):        {podatek} PLN"
+            )
         else:
-            lines.append("      poz. 29 (Podstawa):       0  (strata, brak podatku)")
-            lines.append("      poz. 30-33:               0 / puste")
+            lines.append(f"      poz. {pos_d['podstawa']} (Podstawa):       0  (strata, brak podatku)")
+            lines.append(f"      poz. {pos_d['stawka']}-{pos_d['podatek_nalezny']}:               0 / puste")
         lines.append("")
 
     if report.dividends_income_pln > 0:
@@ -249,26 +273,28 @@ def _render_pit38_filling_instructions(report: YearReport) -> list[str]:
         lines.append("        (wyjątek z art. 63 § 1a OP dla art. 30a — NIE do pełnych zł)")
         lines.append("")
 
-    papiery_pl = report.papiery_wart_income - report.papiery_wart_cost
-    _papiery_tax_pre = max(Decimal("0"), papiery_pl * TAX_RATE)
+    razem_pl_for_total = inne_inc - inne_cost
+    _papiery_tax_pre = max(Decimal("0"), razem_pl_for_total * TAX_RATE)
     podatek_papiery = _papiery_tax_pre.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
     podatek_dyw = report.dividends_tax_to_pay_pln
     razem = podatek_papiery + podatek_dyw
-    pos_total = _pit38_total_to_pay_position(report.year)
     lines.append(f"▌ PODATEK DO ZAPŁATY (poz. {pos_total} PIT-38)")
-    lines.append(f"      = poz. 33 ({podatek_papiery} zł) + poz. {pos_to_pay} ({_fmt(podatek_dyw)} zł)")
+    lines.append(
+        f"      = poz. {pos_d['podatek_nalezny']} ({podatek_papiery} zł) + poz. {pos_to_pay} ({_fmt(podatek_dyw)} zł)"
+    )
     lines.append(f"      = {_fmt(razem)} PLN")
     lines.append("")
 
     pitzg_count = len(_papiery_country_breakdown(report))
     lines.append("▌ SEKCJA L — Załączniki")
-    lines.append(f"      poz. 69 (Liczba załączników PIT/ZG): {pitzg_count}")
+    lines.append(f"      poz. {pos_pitzg} (Liczba załączników PIT/ZG): {pitzg_count}")
     lines.append("")
 
-    if report.year >= 2025:
-        lines.append("⚠ UWAGA 2025+: pozycje sekcji G przesunięte o +2 (45→47, 46→48, 47→49,")
-        lines.append("  total 49→51). Sekcje C i D prawdopodobnie bez zmian. Zweryfikuj na")
-        lines.append("  aktualnym formularzu PIT-38 (wariant ≥18).")
+    sekcja_c_rendered = bool(report.papiery_wart_events or report.pochodne_events)
+    if report.year >= 2025 and not has_pit8c and sekcja_c_rendered:
+        lines.append(f"⚠ UWAGA wariant 18: brak config/pit8c/{report.year}.json — generuję bez wiersza 1.")
+        lines.append("  Jeśli broker wystawił PIT-8C — utwórz config i regeneruj raport.")
+        lines.append("  Ścieżka A: cały obrót w wierszu drugim + zwolnione w wierszu trzecim (zerowe).")
         lines.append("")
 
     return lines

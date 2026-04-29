@@ -442,11 +442,14 @@ class TestPit38FillingInstructions:
         assert "poz. 23" in instr  # Inne przychody — Koszty
 
     def test_specifies_section_l_pitzg_count(self, report_2025):
-        text, _ = report_2025
+        from pit_exante.report import _pit38_pitzg_count_position
+
+        text, r = report_2025
         idx = text.find("INSTRUKCJA WYPEŁNIENIA PIT-38")
         instr = text[idx:]
         assert "SEKCJA L" in instr
-        assert "poz. 69" in instr
+        expected_pos = _pit38_pitzg_count_position(r.year)
+        assert f"poz. {expected_pos}" in instr  # 69 (w17) lub 72 (w18)
         assert "PIT/ZG" in instr
 
     def test_specifies_pit38_total_to_pay_position(self, report_2025):
@@ -469,6 +472,103 @@ class TestPit38FillingInstructions:
             assert "poz. 47" in instr, "2024 should reference poz. 47 (dywidendy)"
             return
         pytest.skip("No 2024 report with dywidendy")
+
+
+class TestPit38Wariant18FallbackPath:
+    """Step 5 ścieżka A — wariant 18 bez PIT-8C config (year ≥ 2025, pit8c=None).
+
+    Wymaga że SEKCJA C zawiera wiersz 3 zwolnione (poz. 24-25 = 0,00),
+    razem na poz. 26-29, sekcja D na poz. 31-35, sekcja L na poz. 72,
+    plus WARN banner o braku configu PIT-8C.
+    """
+
+    def test_zwolnione_row_present_with_zero(self, all_year_reports):
+        """Wariant 18 fallback: wiersz 3 'Zwolnione art. 21.1.105a' poz. 24-25 = 0,00."""
+        for year, text, r in all_year_reports:
+            if year < 2025 or r.pit8c is not None:
+                continue
+            if not (r.papiery_wart_events or r.pochodne_events):
+                continue
+            idx = text.find("INSTRUKCJA WYPEŁNIENIA PIT-38")
+            instr = text[idx:]
+            assert (
+                "Wiersz 3 'Zwolnione art. 21 ust. 1 pkt 105a':" in instr
+            ), f"Year {year}: missing Wiersz 3 zwolnione header"
+            assert "poz. 24 (Przychód):              0,00 PLN" in instr
+            assert "poz. 25 (Koszty):                0,00 PLN" in instr
+            return
+        pytest.skip("No w18 fallback year with sekcja C")
+
+    def test_razem_at_poz_26_29(self, all_year_reports):
+        """Wariant 18: razem ('Wiersz 4') at poz. 26-29 (NIE w17 24-27)."""
+        for year, text, r in all_year_reports:
+            if year < 2025 or r.pit8c is not None:
+                continue
+            if not (r.papiery_wart_events or r.pochodne_events):
+                continue
+            idx = text.find("INSTRUKCJA WYPEŁNIENIA PIT-38")
+            instr = text[idx:]
+            assert "Wiersz 4 'Razem':" in instr
+            assert "poz. 26 (Suma przychód)" in instr
+            assert "poz. 27 (Suma koszty)" in instr
+            return
+        pytest.skip("No w18 fallback year with sekcja C")
+
+    def test_section_d_at_poz_31_35(self, all_year_reports):
+        """Wariant 18: sekcja D shifted +2 → 31 (Podstawa) … 35 (Należny)."""
+        for year, text, r in all_year_reports:
+            if year < 2025 or r.pit8c is not None:
+                continue
+            if not (r.papiery_wart_events or r.pochodne_events):
+                continue
+            idx = text.find("INSTRUKCJA WYPEŁNIENIA PIT-38")
+            instr = text[idx:]
+            # Either positive ("Podstawa, do pełnych zł") lub strata ("Podstawa)")
+            assert "poz. 31 (Podstawa" in instr
+            # Strata path renders "poz. 32-35:" (stawka..nalezny), positive path
+            # renders "poz. 33 (Podatek 19%)" — at least one must appear.
+            assert "poz. 33 (Podatek 19%)" in instr or "poz. 32-35:" in instr
+            # Wariant 17 numeracja musi NIE występować
+            assert "poz. 29 (Podstawa" not in instr
+            assert "poz. 30-33:" not in instr
+            return
+        pytest.skip("No w18 fallback year with sekcja C")
+
+    def test_warn_banner_present(self, all_year_reports):
+        """Wariant 18 + brak PIT-8C + sekcja C rendered → WARN banner."""
+        for year, text, r in all_year_reports:
+            if year < 2025 or r.pit8c is not None:
+                continue
+            if not (r.papiery_wart_events or r.pochodne_events):
+                continue
+            idx = text.find("INSTRUKCJA WYPEŁNIENIA PIT-38")
+            instr = text[idx:]
+            assert f"UWAGA wariant 18: brak config/pit8c/{year}.json" in instr
+            assert "Ścieżka A" in instr
+            return
+        pytest.skip("No w18 fallback year with sekcja C")
+
+    def test_warn_banner_suppressed_for_w17(self, all_year_reports):
+        """Wariant 17 (year < 2025) → BRAK WARN banneru."""
+        for year, text, _r in all_year_reports:
+            if year >= 2025:
+                continue
+            idx = text.find("INSTRUKCJA WYPEŁNIENIA PIT-38")
+            instr = text[idx:]
+            assert "UWAGA wariant 18" not in instr, f"Year {year}: spurious w18 banner"
+
+    def test_warn_banner_suppressed_when_no_sekcja_c(self, all_year_reports):
+        """Year ≥ 2025 ale brak transakcji → brak SEKCJA C → brak banneru."""
+        for year, text, r in all_year_reports:
+            if year < 2025 or r.pit8c is not None:
+                continue
+            if r.papiery_wart_events or r.pochodne_events:
+                continue
+            idx = text.find("INSTRUKCJA WYPEŁNIENIA PIT-38")
+            instr = text[idx:]
+            assert "UWAGA wariant 18" not in instr, f"Year {year}: WARN banner emitted despite no sekcja C"
+            return
+        pytest.skip("No w18 year without transactions")
 
 
 class TestPitZgAttachments:
@@ -585,42 +685,49 @@ class TestPit38InstructionsNumericalCorrectness:
             return None
         return Decimal(match.group(1).replace(",", ""))
 
-    def test_poz_22_matches_papiery_income(self, report_2025):
+    def test_poz_22_matches_combined_inne_income(self, report_2025):
+        # Step 5: ścieżka A (bez PIT-8C) — poz. 22 = papiery + pochodne combined
         text, r = report_2025
-        if not r.papiery_wart_events:
-            pytest.skip("No papiery wart events")
+        if not (r.papiery_wart_events or r.pochodne_events):
+            pytest.skip("No tax events")
         section = self._instr_section(text)
         value = self._extract_pln_after_position(section, 22)
         assert value is not None, "poz. 22 not found in INSTRUKCJA"
-        assert value == r.papiery_wart_income.quantize(
-            Decimal("0.01")
-        ), f"poz. 22 shown {value} != papiery_wart_income {r.papiery_wart_income}"
+        expected = (r.papiery_wart_income + r.pochodne_income).quantize(Decimal("0.01"))
+        assert value == expected, f"poz. 22 shown {value} != combined inne_income {expected}"
 
-    def test_poz_23_matches_papiery_cost(self, report_2025):
+    def test_poz_23_matches_combined_inne_cost(self, report_2025):
+        # Step 5: ścieżka A (bez PIT-8C) — poz. 23 = papiery + pochodne combined
         text, r = report_2025
-        if not r.papiery_wart_events:
-            pytest.skip("No papiery wart events")
+        if not (r.papiery_wart_events or r.pochodne_events):
+            pytest.skip("No tax events")
         section = self._instr_section(text)
         value = self._extract_pln_after_position(section, 23)
         assert value is not None, "poz. 23 not found in INSTRUKCJA"
-        assert value == r.papiery_wart_cost.quantize(
-            Decimal("0.01")
-        ), f"poz. 23 shown {value} != papiery_wart_cost {r.papiery_wart_cost}"
+        expected = (r.papiery_wart_cost + r.pochodne_cost).quantize(Decimal("0.01"))
+        assert value == expected, f"poz. 23 shown {value} != combined inne_cost {expected}"
 
-    def test_poz_27_matches_abs_strata_when_loss(self, all_year_reports):
-        """Strata netto (przychód - koszty < 0) → poz. 27 = wartość bezwzględna."""
+    def test_strata_position_matches_abs_when_loss(self, all_year_reports):
+        """Strata netto → razem_strata = wartość bezwzględna.
+        Wariant 17: poz. 27. Wariant 18: poz. 29. Sprawdzane przez helper.
+        """
+        from pit_exante.report import _pit38_section_c_positions
+
         for year, text, r in all_year_reports:
-            if not r.papiery_wart_events:
+            if not (r.papiery_wart_events or r.pochodne_events):
                 continue
-            net = r.papiery_wart_income - r.papiery_wart_cost
+            inne_inc = r.papiery_wart_income + r.pochodne_income
+            inne_cost = r.papiery_wart_cost + r.pochodne_cost
+            net = inne_inc - inne_cost
             if net >= 0:
                 continue
             section = self._instr_section(text)
-            value = self._extract_pln_after_position(section, 27)
-            assert value is not None, f"Year {year}: poz. 27 not found"
+            pos_c = _pit38_section_c_positions(year, has_pit8c=(r.pit8c is not None))
+            value = self._extract_pln_after_position(section, pos_c["razem_strata"])
+            assert value is not None, f"Year {year}: poz. {pos_c['razem_strata']} not found"
             assert value == (-net).quantize(
                 Decimal("0.01")
-            ), f"Year {year}: poz. 27 shown {value} != |strata| {-net}"
+            ), f"Year {year}: poz. {pos_c['razem_strata']} shown {value} != |strata| {-net}"
 
     def test_dividend_to_pay_position_matches_report(self, all_year_reports):
         """poz. 47 (2024) lub 49 (2025+) wartość 'Różnica do zapłaty' ==
@@ -672,20 +779,23 @@ class TestPit38InstructionsNumericalCorrectness:
         assert verified > 0, "Expected at least one year with PODATEK DO ZAPŁATY summary"
 
     def test_section_l_pitzg_count_matches_breakdown(self, all_year_reports):
-        """SEKCJA L poz. 69 (Liczba załączników PIT/ZG) == liczba krajów z papierami."""
+        """SEKCJA L (Liczba załączników PIT/ZG) == liczba krajów z papierami.
+        Wariant 17: poz. 69. Wariant 18: poz. 72. Pozycja przez helper.
+        """
         import re
 
-        from pit_exante.report import _papiery_country_breakdown
+        from pit_exante.report import _papiery_country_breakdown, _pit38_pitzg_count_position
 
         for year, text, r in all_year_reports:
             section = self._instr_section(text)
-            match = re.search(r"poz\.\s*69[^\n]*?(\d+)\s*$", section, re.MULTILINE)
-            assert match is not None, f"Year {year}: poz. 69 line not found"
+            pos_pitzg = _pit38_pitzg_count_position(year)
+            match = re.search(rf"poz\.\s*{pos_pitzg}[^\n]*?(\d+)\s*$", section, re.MULTILINE)
+            assert match is not None, f"Year {year}: poz. {pos_pitzg} line not found"
             shown_count = int(match.group(1))
             expected_count = len(_papiery_country_breakdown(r))
             assert (
                 shown_count == expected_count
-            ), f"Year {year}: poz. 69 PIT/ZG count {shown_count} != breakdown {expected_count}"
+            ), f"Year {year}: poz. {pos_pitzg} PIT/ZG count {shown_count} != breakdown {expected_count}"
 
 
 class TestPitZgNumericalCorrectness:
