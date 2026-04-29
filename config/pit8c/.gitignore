@@ -1,0 +1,4 @@
+# Block real PIT-8C data from public repo (per PLAN_PIT8C_2025.md decyzja D5).
+# Tracked: README.md, *.json.example. Ignored: realne *.json od usera.
+*.json
+!*.json.example

@@ -270,6 +270,149 @@ class TestPit38DividendPositions:
         assert _pit38_dividend_positions(2026) == (47, 48, 49)
 
 
+class TestPit38SectionCPositions:
+    """Step 4: numeracja sekcji C wg wariantu 17 vs 18 + obecności PIT-8C."""
+
+    def test_w17_2024_no_pit8c(self):
+        from pit_exante.report import _pit38_section_c_positions
+
+        positions = _pit38_section_c_positions(2024, has_pit8c=False)
+        assert positions == {
+            "wiersz_2_inc": 22,
+            "wiersz_2_cost": 23,
+            "razem_inc": 24,
+            "razem_cost": 25,
+            "razem_dochod": 26,
+            "razem_strata": 27,
+        }
+
+    def test_w17_2020_no_pit8c(self):
+        # Wariant 17 spans 2020-2024
+        from pit_exante.report import _pit38_section_c_positions
+
+        positions = _pit38_section_c_positions(2020, has_pit8c=False)
+        assert positions["wiersz_2_inc"] == 22
+        assert positions["razem_inc"] == 24
+        assert "wiersz_1_inc" not in positions
+        assert "wiersz_3_inc" not in positions
+
+    def test_w18_2025_no_pit8c(self):
+        from pit_exante.report import _pit38_section_c_positions
+
+        positions = _pit38_section_c_positions(2025, has_pit8c=False)
+        assert positions == {
+            "wiersz_2_inc": 22,
+            "wiersz_2_cost": 23,
+            "wiersz_3_inc": 24,
+            "wiersz_3_cost": 25,
+            "razem_inc": 26,
+            "razem_cost": 27,
+            "razem_dochod": 28,
+            "razem_strata": 29,
+        }
+        assert "wiersz_1_inc" not in positions
+
+    def test_w18_2025_with_pit8c(self):
+        from pit_exante.report import _pit38_section_c_positions
+
+        positions = _pit38_section_c_positions(2025, has_pit8c=True)
+        # Wiersz 1 PIT-8C dodany
+        assert positions["wiersz_1_inc"] == 20
+        assert positions["wiersz_1_cost"] == 21
+        # Reszta jak bez PIT-8C
+        assert positions["wiersz_2_inc"] == 22
+        assert positions["wiersz_3_inc"] == 24
+        assert positions["razem_inc"] == 26
+        assert positions["razem_strata"] == 29
+
+    def test_w18_2026_with_pit8c(self):
+        from pit_exante.report import _pit38_section_c_positions
+
+        positions = _pit38_section_c_positions(2026, has_pit8c=True)
+        assert positions["wiersz_1_inc"] == 20
+        assert positions["razem_strata"] == 29
+
+    def test_w17_with_pit8c_raises(self):
+        # Plan §6.1: PIT-8C w wariancie 17 niedopuszczalny
+        from pit_exante.report import _pit38_section_c_positions
+
+        with pytest.raises(ValueError, match="wariantu 17"):
+            _pit38_section_c_positions(2024, has_pit8c=True)
+
+    def test_default_has_pit8c_is_false(self):
+        # Backward compat: wywołanie bez has_pit8c działa jak has_pit8c=False
+        from pit_exante.report import _pit38_section_c_positions
+
+        positions = _pit38_section_c_positions(2024)
+        assert "wiersz_1_inc" not in positions
+
+
+class TestPit38SectionDPositions:
+    """Step 4: numeracja sekcji D — w17 (28-33) vs w18 (30-35)."""
+
+    def test_w17_2024(self):
+        from pit_exante.report import _pit38_section_d_positions
+
+        assert _pit38_section_d_positions(2024) == {
+            "straty_lat": 28,
+            "podstawa": 29,
+            "stawka": 30,
+            "podatek_dochodu": 31,
+            "podatek_za_granica": 32,
+            "podatek_nalezny": 33,
+        }
+
+    def test_w17_2020(self):
+        from pit_exante.report import _pit38_section_d_positions
+
+        positions = _pit38_section_d_positions(2020)
+        assert positions["straty_lat"] == 28
+        assert positions["podatek_nalezny"] == 33
+
+    def test_w18_2025(self):
+        from pit_exante.report import _pit38_section_d_positions
+
+        assert _pit38_section_d_positions(2025) == {
+            "straty_lat": 30,
+            "podstawa": 31,
+            "stawka": 32,
+            "podatek_dochodu": 33,
+            "podatek_za_granica": 34,
+            "podatek_nalezny": 35,
+        }
+
+    def test_w18_2026(self):
+        from pit_exante.report import _pit38_section_d_positions
+
+        positions = _pit38_section_d_positions(2026)
+        assert positions["straty_lat"] == 30
+        assert positions["podatek_nalezny"] == 35
+
+
+class TestPit38PitZGCountPosition:
+    """Step 4: poz. PIT/ZG count w sekcji L — 69 (w17) vs 72 (w18)."""
+
+    def test_w17_2020(self):
+        from pit_exante.report import _pit38_pitzg_count_position
+
+        assert _pit38_pitzg_count_position(2020) == 69
+
+    def test_w17_2024(self):
+        from pit_exante.report import _pit38_pitzg_count_position
+
+        assert _pit38_pitzg_count_position(2024) == 69
+
+    def test_w18_2025(self):
+        from pit_exante.report import _pit38_pitzg_count_position
+
+        assert _pit38_pitzg_count_position(2025) == 72
+
+    def test_w18_2026(self):
+        from pit_exante.report import _pit38_pitzg_count_position
+
+        assert _pit38_pitzg_count_position(2026) == 72
+
+
 class TestPit38FillingInstructions:
     """Konkretne pole-po-polu instrukcje wypełnienia PIT-38."""
 

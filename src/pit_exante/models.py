@@ -157,6 +157,25 @@ class CountryDividend:
     events: list[DividendEvent] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class PitEightCInfo:
+    """PIT-8C cz. D — input dla wariantu 18 PIT-38 (rok ≥ 2025).
+
+    Source: broker (Exante) PDF, ręczna transkrypcja przez usera do
+    `config/pit8c/{year}.json`. Zero PDF parsingu (NG1 planu).
+
+    poz_35 / poz_36 idą do PIT-38 wariant 18 wiersza 1 (poz. 20-21) jako
+    referencja — tool zawsze wpisuje swoją liczbę per art. 11a ust. 2 (D7).
+    """
+
+    year: int
+    poz_35_income_pln: Decimal  # PIT-8C cz. D poz. 35 — przychód
+    poz_36_cost_pln: Decimal  # PIT-8C cz. D poz. 36 — koszty
+    issuer_name: str | None = None
+    issuer_nip: str | None = None
+    notes: str | None = None
+
+
 @dataclass
 class YearReport:
     year: int
@@ -182,3 +201,8 @@ class YearReport:
     dividends_tax_to_pay_pln: Decimal = Decimal("0")  # poz. 47 — do dopłaty
     dividend_events: list[DividendEvent] = field(default_factory=list)
     dividends_by_country: dict[str, CountryDividend] = field(default_factory=dict)
+    # PIT-8C cz. D (wariant 18 PIT-38, rok ≥ 2025) — None gdy brak configu / wariant 17
+    pit8c: PitEightCInfo | None = None
+    # PIT-38 wiersz 3 wariant 18 — zwolnione art. 21.1.105a (typowo 0,00 dla Exante retail)
+    zwolnione_income_pln: Decimal = Decimal("0")
+    zwolnione_cost_pln: Decimal = Decimal("0")

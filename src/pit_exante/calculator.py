@@ -28,6 +28,7 @@ from .models import (
 )
 from .nbp import get_rate, save_cache_if_dirty
 from .parser import is_instrument_trade, parse_transactions
+from .pit8c import hydrate_year_reports
 from .symbol_metadata import classify as classify_kind
 
 logger = logging.getLogger(__name__)
@@ -543,11 +544,18 @@ def _match_tax_by_timestamp(
     return False
 
 
-def calculate(transactions_path: str | Path) -> tuple[list[YearReport], dict]:
+def calculate(
+    transactions_path: str | Path,
+    pit8c_config_dir: Path | None = None,
+) -> tuple[list[YearReport], dict]:
     """Process all transactions and generate yearly tax reports.
 
     Returns (reports, open_positions) where open_positions is the FIFO state
     at the end of processing.
+
+    If ``pit8c_config_dir`` is provided, each report's ``pit8c`` field is
+    hydrated from ``{config_dir}/{year}.json`` (PIT-38 wariant 18, rok ≥ 2025).
+    Years without a matching config file keep ``pit8c = None``.
     """
     transactions = parse_transactions(transactions_path)
     commission_map = _build_commission_map(transactions)
@@ -895,6 +903,9 @@ def calculate(transactions_path: str | Path) -> tuple[list[YearReport], dict]:
     # Aggregate by year
     reports = _aggregate_by_year(tax_events, dividend_events)
     positions = fifo.get_positions()
+
+    if pit8c_config_dir is not None:
+        hydrate_year_reports(reports, pit8c_config_dir)
 
     return reports, positions
 

@@ -54,11 +54,93 @@ def _pit38_total_to_pay_position(year: int) -> int:
 
     2020-2024 (wariant 17): poz. 49
     2025+ (wariant 18+): poz. 51 — przesunięcie +2 spójne z sekcją G dyw.
-    Zweryfikowane na PIT-38(17) z 2024; dla 2025+ to ekstrapolacja, do potwierdzenia.
+    Zweryfikowane na PIT-38(17) z 2024 i PIT-38(18) z 2025.
     """
     if year >= 2025:
         return 51
     return 49
+
+
+def _pit38_section_c_positions(year: int, has_pit8c: bool = False) -> dict[str, int]:
+    """PIT-38 sekcja C — numeracja pól wg wariantu i obecności PIT-8C.
+
+    Returns dict z kluczami logicznymi → numery pozycji w formularzu.
+
+    | Wariant | has_pit8c | wiersz_1 (PIT-8C) | wiersz_2 (Inne) | wiersz_3 (Zwolnione) | razem |
+    |---------|-----------|-------------------|-----------------|----------------------|-------|
+    | 17 (≤2024) | False | n/a              | 22, 23          | n/a                  | 24-27 |
+    | 18 (≥2025) | False | n/a              | 22, 23          | 24, 25               | 26-29 |
+    | 18 (≥2025) | True  | 20, 21           | 22, 23          | 24, 25               | 26-29 |
+
+    Klucze 'razem_dochod', 'razem_strata' są w "zł, gr" (per formularz).
+
+    Raises ValueError gdy `year < 2025 AND has_pit8c=True` (zabronione per
+    plan §6.1: "wariant 17 nie obsługuje wiersza 1 dla większości userów").
+    """
+    if year >= 2025:
+        positions = {
+            "wiersz_2_inc": 22,
+            "wiersz_2_cost": 23,
+            "wiersz_3_inc": 24,
+            "wiersz_3_cost": 25,
+            "razem_inc": 26,
+            "razem_cost": 27,
+            "razem_dochod": 28,
+            "razem_strata": 29,
+        }
+        if has_pit8c:
+            positions["wiersz_1_inc"] = 20
+            positions["wiersz_1_cost"] = 21
+        return positions
+
+    if has_pit8c:
+        raise ValueError(
+            f"has_pit8c=True nie jest obsługiwane dla wariantu 17 (rok {year}); "
+            f"PIT-8C cz. D wymaga formularza ≥18 (rok ≥ 2025)"
+        )
+    return {
+        "wiersz_2_inc": 22,
+        "wiersz_2_cost": 23,
+        "razem_inc": 24,
+        "razem_cost": 25,
+        "razem_dochod": 26,
+        "razem_strata": 27,
+    }
+
+
+def _pit38_section_d_positions(year: int) -> dict[str, int]:
+    """PIT-38 sekcja D (Obliczenie zobowiązania, art. 30b ust. 1) — numeracja.
+
+    Wariant 17 (≤2024): poz. 28-33
+    Wariant 18 (≥2025): poz. 30-35 (shift +2)
+
+    Zaokrąglenia (te same w obu wariantach):
+    - 'podstawa': pełne zł (po zaokrągleniu)
+    - 'podatek_dochodu': zł, gr (= podstawa × stawka — bez zaokrąglenia)
+    - 'podatek_za_granica': zł, gr
+    - 'podatek_nalezny': pełne zł (po zaokrągleniu)
+    - 'straty_lat': zł, gr
+    """
+    base = 30 if year >= 2025 else 28
+    return {
+        "straty_lat": base,
+        "podstawa": base + 1,
+        "stawka": base + 2,
+        "podatek_dochodu": base + 3,
+        "podatek_za_granica": base + 4,
+        "podatek_nalezny": base + 5,
+    }
+
+
+def _pit38_pitzg_count_position(year: int) -> int:
+    """PIT-38 sekcja L 'Informacje o załącznikach' — liczba PIT/ZG.
+
+    2020-2024 (wariant 17): poz. 69
+    2025+ (wariant 18+): poz. 72 (shift +3 — w18 dodał sekcje E i F + nadpłatę poz. 52)
+    """
+    if year >= 2025:
+        return 72
+    return 69
 
 
 _COUNTRY_FULL_NAME = {
