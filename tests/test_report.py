@@ -316,14 +316,19 @@ class TestPit38SectionCPositions:
         from pit_exante.report import _pit38_section_c_positions
 
         positions = _pit38_section_c_positions(2025, has_pit8c=True)
-        # Wiersz 1 PIT-8C dodany
-        assert positions["wiersz_1_inc"] == 20
-        assert positions["wiersz_1_cost"] == 21
-        # Reszta jak bez PIT-8C
-        assert positions["wiersz_2_inc"] == 22
-        assert positions["wiersz_3_inc"] == 24
-        assert positions["razem_inc"] == 26
-        assert positions["razem_strata"] == 29
+        # Full dict equality — guards against stray/typo keys (T4 from review)
+        assert positions == {
+            "wiersz_1_inc": 20,
+            "wiersz_1_cost": 21,
+            "wiersz_2_inc": 22,
+            "wiersz_2_cost": 23,
+            "wiersz_3_inc": 24,
+            "wiersz_3_cost": 25,
+            "razem_inc": 26,
+            "razem_cost": 27,
+            "razem_dochod": 28,
+            "razem_strata": 29,
+        }
 
     def test_w18_2026_with_pit8c(self):
         from pit_exante.report import _pit38_section_c_positions

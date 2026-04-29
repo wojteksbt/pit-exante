@@ -28,7 +28,7 @@ from .models import (
 )
 from .nbp import get_rate, save_cache_if_dirty
 from .parser import is_instrument_trade, parse_transactions
-from .pit8c import hydrate_year_reports
+from .pit8c import load_pit8c
 from .symbol_metadata import classify as classify_kind
 
 logger = logging.getLogger(__name__)
@@ -905,9 +905,22 @@ def calculate(
     positions = fifo.get_positions()
 
     if pit8c_config_dir is not None:
-        hydrate_year_reports(reports, pit8c_config_dir)
+        _apply_pit8c_to_reports(reports, pit8c_config_dir)
 
     return reports, positions
+
+
+def _apply_pit8c_to_reports(reports: list[YearReport], config_dir: Path) -> None:
+    """Populate ``report.pit8c`` for each report whose year has a config file.
+
+    Cohesion: lives next to ``_aggregate_by_year`` because both produce
+    ``YearReport`` state. Loader (``pit8c.load_pit8c``) stays a pure data
+    accessor with no knowledge of report shape.
+    """
+    for report in reports:
+        info = load_pit8c(report.year, config_dir)
+        if info is not None:
+            report.pit8c = info
 
 
 def _aggregate_by_year(

@@ -13,7 +13,7 @@ import json
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from pit_exante.models import PitEightCInfo, YearReport
+from pit_exante.models import PitEightCInfo
 
 
 class Pit8CConfigError(ValueError):
@@ -52,11 +52,17 @@ def load_pit8c(year: int, config_dir: Path) -> PitEightCInfo | None:
     for required in ("poz_35_income_pln", "poz_36_cost_pln"):
         if required not in data:
             raise Pit8CConfigError(f"{path}: niekompletny config — wymagane pole {required!r}")
+        if not isinstance(data[required], str):
+            raise Pit8CConfigError(
+                f"{path}: pole {required!r} musi być stringiem (got "
+                f"{type(data[required]).__name__}); per schema wszystkie kwoty są "
+                f"stringami dla zachowania Decimal precision (zob. config/pit8c/README.md)"
+            )
 
     try:
-        poz_35 = Decimal(str(data["poz_35_income_pln"]))
-        poz_36 = Decimal(str(data["poz_36_cost_pln"]))
-    except (InvalidOperation, TypeError) as e:
+        poz_35 = Decimal(data["poz_35_income_pln"])
+        poz_36 = Decimal(data["poz_36_cost_pln"])
+    except InvalidOperation as e:
         raise Pit8CConfigError(f"{path}: poz_35/poz_36 not parseable as Decimal: {e}") from e
 
     if poz_35 < 0 or poz_36 < 0:
@@ -75,16 +81,3 @@ def load_pit8c(year: int, config_dir: Path) -> PitEightCInfo | None:
         issuer_nip=data.get("issuer_nip"),
         notes=data.get("notes"),
     )
-
-
-def hydrate_year_reports(reports: list[YearReport], config_dir: Path) -> None:
-    """Populate ``report.pit8c`` for each report whose year has a config file.
-
-    Mutates ``reports`` in place. Years without a matching ``{year}.json``
-    are left with ``pit8c = None`` (legacy path). Raises
-    :class:`Pit8CConfigError` if any matching config is malformed.
-    """
-    for report in reports:
-        info = load_pit8c(report.year, config_dir)
-        if info is not None:
-            report.pit8c = info

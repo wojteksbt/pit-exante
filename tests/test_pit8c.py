@@ -8,8 +8,9 @@ from pathlib import Path
 
 import pytest
 
+from pit_exante.calculator import _apply_pit8c_to_reports
 from pit_exante.models import PitEightCInfo, YearReport
-from pit_exante.pit8c import Pit8CConfigError, hydrate_year_reports, load_pit8c
+from pit_exante.pit8c import Pit8CConfigError, load_pit8c
 
 
 def _write(config_dir: Path, year: int, data: dict) -> Path:
@@ -222,8 +223,51 @@ class TestLoadPit8CErrorPaths:
         with pytest.raises(Pit8CConfigError, match="year in file"):
             load_pit8c(2025, tmp_path)
 
+    # B1: schema mandates string-typed amounts (Decimal precision invariant).
+    def test_json_float_rejected(self, tmp_path):
+        _write(
+            tmp_path,
+            2025,
+            {
+                "year": 2025,
+                "poz_35_income_pln": 70218.00,  # JSON number — not str
+                "poz_36_cost_pln": "73639.00",
+            },
+        )
+        with pytest.raises(Pit8CConfigError, match="musi być stringiem"):
+            load_pit8c(2025, tmp_path)
 
-class TestHydrateYearReports:
+    def test_json_int_rejected(self, tmp_path):
+        _write(
+            tmp_path,
+            2025,
+            {
+                "year": 2025,
+                "poz_35_income_pln": "100.00",
+                "poz_36_cost_pln": 50,  # JSON int — not str
+            },
+        )
+        with pytest.raises(Pit8CConfigError, match="musi być stringiem"):
+            load_pit8c(2025, tmp_path)
+
+    def test_json_null_rejected(self, tmp_path):
+        # null is technically present but not a string — different from missing
+        _write(
+            tmp_path,
+            2025,
+            {
+                "year": 2025,
+                "poz_35_income_pln": None,
+                "poz_36_cost_pln": "50.00",
+            },
+        )
+        with pytest.raises(Pit8CConfigError, match="musi być stringiem"):
+            load_pit8c(2025, tmp_path)
+
+
+class TestApplyPit8cToReports:
+    """Step 3 wiring + B3 cohesion fix: pit8c assignment lives in calculator."""
+
     def test_year_with_config_gets_pit8c(self, tmp_path):
         _write(
             tmp_path,
@@ -235,19 +279,19 @@ class TestHydrateYearReports:
             },
         )
         reports = [YearReport(year=2025), YearReport(year=2024)]
-        hydrate_year_reports(reports, tmp_path)
+        _apply_pit8c_to_reports(reports, tmp_path)
         assert reports[0].pit8c is not None
         assert reports[0].pit8c.poz_35_income_pln == Decimal("70218.00")
         assert reports[1].pit8c is None  # 2024 has no config, stays None
 
     def test_no_configs_leaves_all_none(self, tmp_path):
         reports = [YearReport(year=2024), YearReport(year=2025)]
-        hydrate_year_reports(reports, tmp_path)
+        _apply_pit8c_to_reports(reports, tmp_path)
         assert all(r.pit8c is None for r in reports)
 
     def test_empty_reports_list(self, tmp_path):
         reports = []
-        hydrate_year_reports(reports, tmp_path)  # no-op, no exception
+        _apply_pit8c_to_reports(reports, tmp_path)  # no-op, no exception
         assert reports == []
 
     def test_malformed_config_bubbles_up(self, tmp_path):
@@ -255,13 +299,38 @@ class TestHydrateYearReports:
         path.write_text("{not valid", encoding="utf-8")
         reports = [YearReport(year=2025)]
         with pytest.raises(Pit8CConfigError, match="Malformed JSON"):
-            hydrate_year_reports(reports, tmp_path)
+            _apply_pit8c_to_reports(reports, tmp_path)
 
     def test_returns_none(self, tmp_path):
         # In-place mutation — explicit None return contract
         reports = [YearReport(year=2025)]
-        result = hydrate_year_reports(reports, tmp_path)
+        result = _apply_pit8c_to_reports(reports, tmp_path)
         assert result is None
+
+    def test_multiple_years_with_configs(self, tmp_path):
+        # T2 from review: cover N≥2 reports both with configs
+        _write(
+            tmp_path,
+            2025,
+            {
+                "year": 2025,
+                "poz_35_income_pln": "100.00",
+                "poz_36_cost_pln": "50.00",
+            },
+        )
+        _write(
+            tmp_path,
+            2026,
+            {
+                "year": 2026,
+                "poz_35_income_pln": "200.00",
+                "poz_36_cost_pln": "150.00",
+            },
+        )
+        reports = [YearReport(year=2025), YearReport(year=2026)]
+        _apply_pit8c_to_reports(reports, tmp_path)
+        assert reports[0].pit8c.poz_35_income_pln == Decimal("100.00")
+        assert reports[1].pit8c.poz_35_income_pln == Decimal("200.00")
 
 
 class TestCalculateAcceptsPit8CConfigDir:

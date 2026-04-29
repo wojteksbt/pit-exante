@@ -1,4 +1,10 @@
-# Block real PIT-8C data from public repo (per PLAN_PIT8C_2025.md decyzja D5).
-# Tracked: README.md, *.json.example. Ignored: realne *.json od usera.
-*.json
+# Whitelist mode (per PLAN_PIT8C_2025.md decyzja D5 + review fix B2).
+# Block EVERYTHING by default — realne dane PIT-8C / editor backups
+# (*.json.bak, *.json~, *.json.swp, *.tmp, ad-hoc notes) NIE trafiają
+# do publicznego repo. Tylko explicit allow-listed pliki są tracked.
+*
+
+# Allow this gitignore itself + schema + docs
+!.gitignore
+!README.md
 !*.json.example
