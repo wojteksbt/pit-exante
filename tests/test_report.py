@@ -1108,6 +1108,33 @@ class TestPit38SciezkaBPit8c:
         with pytest.raises(Pit8CReconciliationError, match="zerowe poz. 35/36"):
             self._render(r)
 
+    def test_warn_when_income_corr_negative(self):
+        # Plan §6.1: tool < PIT-8C income — broker zawyżył; tool wins ale WARN
+        r = self._make_report(papiery_inc="69000.00", pit8c_inc="70218.00")
+        text = self._render(r)
+        assert "Tool niższy niż PIT-8C — broker zawyżył przychód" in text
+        assert "uzasadnienie metodologiczne" in text
+
+    def test_no_warn_when_income_corr_positive(self):
+        # When tool > PIT-8C, no negative-corr WARN (only breakdown line)
+        r = self._make_report(papiery_inc="70388.62", pit8c_inc="70218.00")
+        text = self._render(r)
+        assert "broker zawyżył przychód" not in text
+
+    def test_warn_when_cost_corr_negative(self):
+        # Plan §6.1: tool < PIT-8C cost — broker zawyżył; możliwy bug klasyfikatora
+        r = self._make_report(papiery_cost="73000.00", pit8c_cost="73639.00")
+        text = self._render(r)
+        assert "możliwy bug klasyfikatora" in text
+        assert "STOCK→CFD" in text
+
+    def test_no_warn_when_cost_corr_positive(self):
+        # cost_corr > 0 → broszura citation, NIE klasyfikator WARN
+        r = self._make_report(papiery_cost="76134.80", pit8c_cost="73639.00")
+        text = self._render(r)
+        assert "Broszura MF" in text
+        assert "możliwy bug klasyfikatora" not in text
+
     def test_no_abort_when_pit8c_zero_zero_and_tool_zero(self):
         # Step 7 B2 — zero/zero + tool zero is degenerate but consistent (no abort)
         r = self._make_report(
