@@ -882,20 +882,31 @@ class TestQuantizeUsesHalfUp:
         assert Decimal("2.845").quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) == Decimal("2.85")
 
     def test_report_py_source_has_no_quantize_without_explicit_rounding(self):
-        # Static guardrail: każdy quantize w report.py musi mieć explicit
-        # rounding=ROUND_HALF_UP. Catch nowych dodawanych quantize bez argumentu.
+        # Static guardrail: każdy quantize() w report.py musi mieć explicit
+        # rounding=ROUND_HALF_UP. AST-based — odporne na ruff format / wrapy.
+        import ast
+
         report_path = ROOT / "src" / "pit_exante" / "report.py"
-        source = report_path.read_text()
-        for lineno, line in enumerate(source.splitlines(), 1):
-            stripped = line.strip()
-            if stripped.startswith("#") or stripped.startswith('"'):
+        tree = ast.parse(report_path.read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
                 continue
-            if ".quantize(" in stripped and "import" not in stripped:
-                assert "ROUND_HALF_UP" in stripped, (
-                    f"report.py:{lineno}: quantize without explicit ROUND_HALF_UP — "
-                    f"Python default HALF_EVEN diverges from calculator's HALF_UP for .005 values. "
-                    f"Line: {stripped!r}"
-                )
+            func = node.func
+            if not (isinstance(func, ast.Attribute) and func.attr == "quantize"):
+                continue
+            has_round_half_up = any(
+                kw.arg == "rounding" and isinstance(kw.value, ast.Name) and kw.value.id == "ROUND_HALF_UP"
+                for kw in node.keywords
+            )
+            # Także akceptuj pozycyjne ROUND_HALF_UP jako 2. argument.
+            if not has_round_half_up and len(node.args) >= 2:
+                arg = node.args[1]
+                if isinstance(arg, ast.Name) and arg.id == "ROUND_HALF_UP":
+                    has_round_half_up = True
+            assert has_round_half_up, (
+                f"report.py:{node.lineno}: quantize() bez explicit rounding=ROUND_HALF_UP — "
+                f"Python default HALF_EVEN różni się od calculator's HALF_UP dla wartości .005."
+            )
 
 
 class TestCsvOutput:
