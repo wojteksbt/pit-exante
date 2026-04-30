@@ -8,18 +8,23 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 from .models import TAX_RATE, FifoLot, TaxEvent, YearReport
-from .pit8c import Pit8CReconciliationError
 
-_RECONCILIATION_TOLERANCE = Decimal("0.05")  # plan §6.1 D9 — abort > 5%
+_PIT38_W18_FIRST_YEAR = 2025  # MF revised PIT-38 layout (wariant 18) for tax year 2025
 
 
 def _fmt(amount: Decimal, width: int = 12) -> str:
-    """Format decimal as PLN amount with 2 decimal places."""
-    return f"{amount:>{width},.2f}"
+    """Format decimal as PLN amount with 2 decimal places (Polish locale).
+
+    Separator dziesiętny: przecinek; separator tysięcy: NBSP ( ).
+    NBSP a nie zwykła spacja — utrzymuje wyrównanie kolumn i nie myli
+    parserów CSV / split() (które tnęły po zwykłej spacji).
+    """
+    s = f"{amount:>{width},.2f}"
+    return s.replace(",", " ").replace(".", ",")
 
 
 def _fmt_orig(amount: Decimal, currency: str, width: int = 12) -> str:
-    """Format decimal in original currency."""
+    """Format decimal in original currency (kropka — format giełdowy)."""
     return f"{amount:>{width},.2f} {currency}"
 
 
@@ -47,7 +52,7 @@ def _pit38_dividend_positions(year: int) -> tuple[int, int, int]:
 
     Numery pozycji zostały przesunięte o 2 w formularzu za 2025 r.
     """
-    if year >= 2025:
+    if year >= _PIT38_W18_FIRST_YEAR:
         return 47, 48, 49
     return 45, 46, 47
 
@@ -59,29 +64,27 @@ def _pit38_total_to_pay_position(year: int) -> int:
     2025+ (wariant 18+): poz. 51 — przesunięcie +2 spójne z sekcją G dyw.
     Zweryfikowane na PIT-38(17) z 2024 i PIT-38(18) z 2025.
     """
-    if year >= 2025:
+    if year >= _PIT38_W18_FIRST_YEAR:
         return 51
     return 49
 
 
-def _pit38_section_c_positions(year: int, has_pit8c: bool = False) -> dict[str, int]:
-    """PIT-38 sekcja C — numeracja pól wg wariantu i obecności PIT-8C.
+def _pit38_section_c_positions(year: int) -> dict[str, int]:
+    """PIT-38 sekcja C — numeracja pól wg wariantu formularza.
 
-    Returns dict z kluczami logicznymi → numery pozycji w formularzu.
+    | Wariant | wiersz_1 (PIT-8C, pre-fill) | wiersz_2 (Inne) | wiersz_3 (Zwolnione) | razem |
+    |---------|-----------------------------|-----------------|----------------------|-------|
+    | 17 (≤2024) | n/a                      | 22, 23          | n/a                  | 24-27 |
+    | 18 (≥2025) | 20, 21                   | 22, 23          | 24, 25               | 26-29 |
 
-    | Wariant | has_pit8c | wiersz_1 (PIT-8C) | wiersz_2 (Inne) | wiersz_3 (Zwolnione) | razem |
-    |---------|-----------|-------------------|-----------------|----------------------|-------|
-    | 17 (≤2024) | False | n/a              | 22, 23          | n/a                  | 24-27 |
-    | 18 (≥2025) | False | n/a              | 22, 23          | 24, 25               | 26-29 |
-    | 18 (≥2025) | True  | 20, 21           | 22, 23          | 24, 25               | 26-29 |
-
-    Klucze 'razem_dochod', 'razem_strata' są w "zł, gr" (per formularz).
-
-    Raises ValueError gdy `year < 2025 AND has_pit8c=True` (zabronione per
-    plan §6.1: "wariant 17 nie obsługuje wiersza 1 dla większości userów").
+    Wariant 18 wiersz 1 (poz. 20-21) jest auto-pre-fillowany przez US z PIT-8C
+    cz. D wystawionego przez brokera; tool nie wpisuje tam wartości — tylko
+    porównuje je z własnym wyliczeniem (papiery_wart_*).
     """
-    if year >= 2025:
-        positions = {
+    if year >= _PIT38_W18_FIRST_YEAR:
+        return {
+            "wiersz_1_inc": 20,
+            "wiersz_1_cost": 21,
             "wiersz_2_inc": 22,
             "wiersz_2_cost": 23,
             "wiersz_3_inc": 24,
@@ -91,16 +94,6 @@ def _pit38_section_c_positions(year: int, has_pit8c: bool = False) -> dict[str, 
             "razem_dochod": 28,
             "razem_strata": 29,
         }
-        if has_pit8c:
-            positions["wiersz_1_inc"] = 20
-            positions["wiersz_1_cost"] = 21
-        return positions
-
-    if has_pit8c:
-        raise ValueError(
-            f"has_pit8c=True nie jest obsługiwane dla wariantu 17 (rok {year}); "
-            f"PIT-8C cz. D wymaga formularza ≥18 (rok ≥ 2025)"
-        )
     return {
         "wiersz_2_inc": 22,
         "wiersz_2_cost": 23,
@@ -124,7 +117,7 @@ def _pit38_section_d_positions(year: int) -> dict[str, int]:
     - 'podatek_nalezny': pełne zł (po zaokrągleniu)
     - 'straty_lat': zł, gr
     """
-    base = 30 if year >= 2025 else 28
+    base = 30 if year >= _PIT38_W18_FIRST_YEAR else 28
     return {
         "straty_lat": base,
         "podstawa": base + 1,
@@ -141,7 +134,7 @@ def _pit38_pitzg_count_position(year: int) -> int:
     2020-2024 (wariant 17): poz. 69
     2025+ (wariant 18+): poz. 72 (shift +3 — w18 dodał sekcje E i F + nadpłatę poz. 52)
     """
-    if year >= 2025:
+    if year >= _PIT38_W18_FIRST_YEAR:
         return 72
     return 69
 
@@ -156,6 +149,28 @@ _COUNTRY_FULL_NAME = {
 def _country_full_name(code: str) -> str:
     """Pełna nazwa kraju do PIT/ZG poz. 6 (fallback to ISO code)."""
     return _COUNTRY_FULL_NAME.get(code, code)
+
+
+def _papiery_header_destination(year: int) -> str:
+    """Year-aware podtytuł sekcji 'Papiery wartościowe'.
+
+    Wariant 17 (≤2024): brak PIT-8C → user wpisuje ręcznie do wiersza 2.
+    Wariant 18 (≥2025): broker wystawia PIT-8C, KAS wstępnie wypełnia
+    poz. 20-21 (sekcja C wiersz 1).
+    """
+    if year >= _PIT38_W18_FIRST_YEAR:
+        return " → PIT-8C poz. 35/36 → PIT-38 sekcja C wiersz 1 (poz. 20-21, wstępnie wypełnione)"
+    return " → PIT-38 sekcja C wiersz 2 'Inne przychody' (poz. 22-23)"
+
+
+def _pochodne_header_destination(year: int) -> str:
+    """Year-aware podtytuł sekcji 'Instrumenty pochodne' (CFD).
+
+    Wariant 18: broker łączy CFD i akcje w PIT-8C poz. 35/36 (jeden tor pre-fill).
+    """
+    if year >= _PIT38_W18_FIRST_YEAR:
+        return " → ujęte w PIT-8C poz. 35/36 razem z papierami (broker łączy CFD i akcje)"
+    return " → PIT-38 sekcja C wiersz 2 'Inne przychody' (poz. 22-23, sumują z papierami)"
 
 
 def _papiery_country_breakdown(
@@ -185,198 +200,15 @@ def _papiery_country_breakdown(
     return {k: (v[0], v[1]) for k, v in breakdown.items()}
 
 
-def _check_pit8c_reconciliation(report: YearReport) -> None:
-    """Plan §6.1 D9 — ABORT generacji gdy rozjazd > 5% przychodu/kosztu.
-
-    Tool autorytatywny dla wartości (art. 11a ust. 2). PIT-8C autorytatywny
-    dla istnienia obowiązku informacyjnego. Rozjazd > 5% = nie-metodologiczny —
-    możliwy bug klasyfikatora STOCK/CFD lub brakujące transakcje.
-
-    Edge case (review B-Step7-2): pit8c degenerate (oba 0) + tool ma dane →
-    abort z komunikatem o niespójności (loader pozwala 0/0 jako technical
-    valid input, ale nie ma sensu z transakcjami w tool).
-    """
-    pit8c = report.pit8c
-    if pit8c is None:
-        return
-    income_corr = report.papiery_wart_income - pit8c.poz_35_income_pln
-    cost_corr = report.papiery_wart_cost - pit8c.poz_36_cost_pln
-    if pit8c.poz_35_income_pln == 0 and pit8c.poz_36_cost_pln == 0:
-        if report.papiery_wart_income > 0 or report.papiery_wart_cost > 0:
-            raise Pit8CReconciliationError(
-                f"PIT-8C dla {report.year} ma zerowe poz. 35/36, ale tool widzi "
-                f"transakcje (income={report.papiery_wart_income}, "
-                f"cost={report.papiery_wart_cost}). Niespójność — sprawdź czy "
-                f"PIT-8C dotyczy właściwego roku/brokera lub usuń config."
-            )
-        return  # both 0 + tool 0 = degenerate but consistent; no abort
-    if pit8c.poz_35_income_pln > 0:
-        ratio = abs(income_corr) / pit8c.poz_35_income_pln
-        if ratio > _RECONCILIATION_TOLERANCE:
-            raise Pit8CReconciliationError(
-                f"Rozjazd przychodu PIT-8C dla {report.year}: tool="
-                f"{report.papiery_wart_income} vs PIT-8C poz. 35={pit8c.poz_35_income_pln} "
-                f"(różnica {income_corr}, {ratio * 100:.2f}% — limit 5%). Wymagana manualna "
-                f"analiza per-symbol PRZED złożeniem PIT-38 (planowany audit-classifier {report.year})."
-            )
-    if pit8c.poz_36_cost_pln > 0:
-        ratio = abs(cost_corr) / pit8c.poz_36_cost_pln
-        if ratio > _RECONCILIATION_TOLERANCE:
-            raise Pit8CReconciliationError(
-                f"Rozjazd kosztów PIT-8C dla {report.year}: tool="
-                f"{report.papiery_wart_cost} vs PIT-8C poz. 36={pit8c.poz_36_cost_pln} "
-                f"(różnica {cost_corr}, {ratio * 100:.2f}% — limit 5%)."
-            )
-
-
-def _render_diagnostyka_pit8c(report: YearReport) -> list[str]:
-    """Plan §5.3 D8 — DIAGNOSTYKA pokazuje obie liczby (tool vs PIT-8C) zawsze
-    gdy pit8c present. Pełna transparentność audytu.
-    """
-    pit8c = report.pit8c
-    if pit8c is None:
-        return []
-    income_corr = report.papiery_wart_income - pit8c.poz_35_income_pln
-    cost_corr = report.papiery_wart_cost - pit8c.poz_36_cost_pln
-    pct_inc = (income_corr * 100 / pit8c.poz_35_income_pln) if pit8c.poz_35_income_pln else Decimal("0")
-    pct_cost = (cost_corr * 100 / pit8c.poz_36_cost_pln) if pit8c.poz_36_cost_pln else Decimal("0")
-    lines: list[str] = []
-    lines.append("══════════════════════════════════════════════════════════════════════")
-    lines.append(" DIAGNOSTYKA — tool (art. 11a ust. 2) vs PIT-8C broker")
-    lines.append("══════════════════════════════════════════════════════════════════════")
-    lines.append("                          Tool        PIT-8C       Rozjazd       %")
-    lines.append(
-        f"  poz. 20 (przychód):  {_fmt(report.papiery_wart_income)} {_fmt(pit8c.poz_35_income_pln)}"
-        f" {_fmt(income_corr)} ({pct_inc:+.2f}%)"
-    )
-    lines.append(
-        f"  poz. 21 (koszty):    {_fmt(report.papiery_wart_cost)} {_fmt(pit8c.poz_36_cost_pln)}"
-        f" {_fmt(cost_corr)} ({pct_cost:+.2f}%)"
-    )
-    lines.append("")
-    lines.append("  Tool wpisuje SWOJĄ liczbę do poz. 20/21 per D7 (art. 11a ust. 2).")
-    lines.append("  PIT-8C jest referencją informacyjną — broker zna kursy sprzedaży,")
-    lines.append("  art. 11a ust. 2 wymaga kursu NBP dnia poprzedzającego transakcję.")
-    lines.append("══════════════════════════════════════════════════════════════════════")
-    lines.append("")
-    return lines
-
-
-def _render_section_c_path_a(
-    *,
-    inne_inc: Decimal,
-    inne_cost: Decimal,
-    year: int,
-    pos_c: dict[str, int],
-    razem_wiersz_num: int,
-) -> tuple[list[str], Decimal]:
-    """Renderuje sekcję C ścieżki A (bez PIT-8C). Zwraca (lines, razem_pl).
-
-    Wariant 17: wiersz 2 (poz. 22-23) + wiersz 3 razem (24-27).
-    Wariant 18 fallback: wiersz 2 (22-23) + wiersz 3 zwolnione (24-25 = 0,00) +
-    wiersz 4 razem (26-29).
-    """
-    razem_pl = inne_inc - inne_cost  # zwolnione = 0
-    lines: list[str] = []
-    lines.append("▌ SEKCJA C — Dochody/straty z papierów wartościowych (art. 30b ust. 1)")
-    lines.append("    Wiersz 2 'Inne przychody':")
-    lines.append(f"      poz. {pos_c['wiersz_2_inc']} (Przychód):       {_fmt(inne_inc)} PLN")
-    lines.append(f"      poz. {pos_c['wiersz_2_cost']} (Koszty):         {_fmt(inne_cost)} PLN")
-    if year >= 2025:
-        lines.append("    Wiersz 3 'Zwolnione art. 21 ust. 1 pkt 105a':")
-        lines.append(f"      poz. {pos_c['wiersz_3_inc']} (Przychód):              0,00 PLN")
-        lines.append(f"      poz. {pos_c['wiersz_3_cost']} (Koszty):                0,00 PLN")
-    lines.append(f"    Wiersz {razem_wiersz_num} 'Razem':")
-    lines.append(f"      poz. {pos_c['razem_inc']} (Suma przychód):  {_fmt(inne_inc)} PLN")
-    lines.append(f"      poz. {pos_c['razem_cost']} (Suma koszty):    {_fmt(inne_cost)} PLN")
-    if razem_pl > 0:
-        lines.append(f"      poz. {pos_c['razem_dochod']} (Dochód):         {_fmt(razem_pl)} PLN")
-        lines.append(f"      poz. {pos_c['razem_strata']} (Strata):         puste")
-    elif razem_pl < 0:
-        lines.append(f"      poz. {pos_c['razem_dochod']} (Dochód):         puste")
-        lines.append(f"      poz. {pos_c['razem_strata']} (Strata):         {_fmt(-razem_pl)} PLN")
-    else:
-        lines.append(f"      poz. {pos_c['razem_dochod']}-{pos_c['razem_strata']}: 0 (break-even)")
-    lines.append("")
-    return lines, razem_pl
-
-
-def _render_section_c_path_b(
-    report: YearReport,
+def _render_razem_block(
     *,
     pos_c: dict[str, int],
     razem_wiersz_num: int,
-    stock_income_correction: bool,
-) -> tuple[list[str], Decimal]:
-    """Renderuje sekcję C ścieżki B (z PIT-8C). Zwraca (lines, razem_pl).
-
-    D7: tool wins poz. 20/21. D6 default = wykazanie korekty STOCK w poz. 22.
-    Cytat broszury MF gated on cost_corr > 0. WARN dla negative corrections
-    per plan §6.1 (broker zawyżył przychód lub koszt — możliwy bug klasyfikatora).
-    """
-    pit8c = report.pit8c
-    assert pit8c is not None  # caller's invariant
-    income_corr = report.papiery_wart_income - pit8c.poz_35_income_pln
-    cost_corr = report.papiery_wart_cost - pit8c.poz_36_cost_pln
-    wiersz_1_inc = report.papiery_wart_income  # tool wins per D7
-    wiersz_1_cost = report.papiery_wart_cost
-    if stock_income_correction and income_corr > 0:
-        wiersz_2_inc = report.pochodne_income + income_corr  # D6 default
-    else:
-        wiersz_2_inc = report.pochodne_income  # D6 OPT-OUT (matches filed 2025)
-    wiersz_2_cost = report.pochodne_cost
-    razem_inc = wiersz_1_inc + wiersz_2_inc  # zwolnione = 0
-    razem_cost = wiersz_1_cost + wiersz_2_cost
-    razem_pl = razem_inc - razem_cost
-
-    issuer = pit8c.issuer_name or "broker"
+    razem_inc: Decimal,
+    razem_cost: Decimal,
+    razem_pl: Decimal,
+) -> list[str]:
     lines: list[str] = []
-    lines.append("▌ SEKCJA C — Dochody/straty z papierów wartościowych (art. 30b ust. 1)")
-    lines.append(f"    Wiersz 1 (PIT-8C cz. D od {issuer}):")
-    lines.append(
-        f"      poz. {pos_c['wiersz_1_inc']} (Przychód):       {_fmt(wiersz_1_inc)} PLN  "
-        f"← tool wins per D7 (art. 11a ust. 2)"
-    )
-    lines.append(f"        z tego: PIT-8C poz. 35:                   {_fmt(pit8c.poz_35_income_pln)} PLN")
-    if income_corr != 0:
-        lines.append(f"                + różnica (tool − PIT-8C):        {_fmt(income_corr)} PLN")
-    lines.append("        Podstawa: art. 11a ust. 2 — kurs NBP dnia poprzedzającego transakcję.")
-    if income_corr < 0:
-        lines.append("        ⚠ Tool niższy niż PIT-8C — broker zawyżył przychód. Tool wpisuje")
-        lines.append("          swoją wartość per D7; przygotuj uzasadnienie metodologiczne")
-        lines.append("          (art. 11a ust. 2) gdyby audytor pytał.")
-    lines.append("")
-    lines.append(
-        f"      poz. {pos_c['wiersz_1_cost']} (Koszty):         {_fmt(wiersz_1_cost)} PLN  "
-        f"← tool wins per D7"
-    )
-    lines.append(f"        z tego: PIT-8C poz. 36:                   {_fmt(pit8c.poz_36_cost_pln)} PLN")
-    if cost_corr != 0:
-        lines.append(f"                + różnica (tool − PIT-8C):        {_fmt(cost_corr)} PLN")
-    if cost_corr > 0:
-        lines.append("        Broszura MF do PIT-38, str. 4: 'w poz. 21 należy wykazać")
-        lines.append("        sumę kwot z poz. 36 PIT-8C oraz innych kosztów związanych")
-        lines.append("        z przychodami z poz. 35, niewykazanych przez podmiot")
-        lines.append("        sporządzający informację'.")
-    elif cost_corr < 0:
-        lines.append("        ⚠ Tool niższy o powyższą kwotę — możliwy bug klasyfikatora")
-        lines.append("          STOCK→CFD lub brakujące transakcje. Sprawdź per-symbol")
-        lines.append("          przed wysłaniem (planowany audit-classifier sub-command).")
-    lines.append("")
-    lines.append("    Wiersz 2 'Inne przychody — poza PIT-8C':")
-    lines.append(f"      poz. {pos_c['wiersz_2_inc']} (Przychód):       {_fmt(wiersz_2_inc)} PLN")
-    if report.pochodne_income > 0 or wiersz_2_inc > 0:
-        lines.append(f"        z tego: CFD/derywatywy:                   {_fmt(report.pochodne_income)} PLN")
-        if stock_income_correction and income_corr > 0:
-            lines.append(f"                + korekta STOCK (D6 default):     {_fmt(income_corr)} PLN")
-            lines.append("                  (gdy `--no-stock-income-correction`: 0)")
-    lines.append(f"      poz. {pos_c['wiersz_2_cost']} (Koszty):         {_fmt(wiersz_2_cost)} PLN")
-    if report.pochodne_cost > 0:
-        lines.append(f"        z tego: CFD/derywatywy + rollovery:       {_fmt(report.pochodne_cost)} PLN")
-    lines.append("")
-    lines.append("    Wiersz 3 'Zwolnione art. 21 ust. 1 pkt 105a':")
-    lines.append(f"      poz. {pos_c['wiersz_3_inc']} (Przychód):              0,00 PLN")
-    lines.append(f"      poz. {pos_c['wiersz_3_cost']} (Koszty):                0,00 PLN")
     lines.append(f"    Wiersz {razem_wiersz_num} 'Razem':")
     lines.append(f"      poz. {pos_c['razem_inc']} (Suma przychód):  {_fmt(razem_inc)} PLN")
     lines.append(f"      poz. {pos_c['razem_cost']} (Suma koszty):    {_fmt(razem_cost)} PLN")
@@ -387,39 +219,227 @@ def _render_section_c_path_b(
         lines.append(f"      poz. {pos_c['razem_dochod']} (Dochód):         puste")
         lines.append(f"      poz. {pos_c['razem_strata']} (Strata):         {_fmt(-razem_pl)} PLN")
     else:
-        lines.append(f"      poz. {pos_c['razem_dochod']}-{pos_c['razem_strata']}: 0 (break-even)")
+        lines.append(f"      poz. {pos_c['razem_dochod']}-{pos_c['razem_strata']}: 0 (bilans zerowy)")
+    return lines
+
+
+def _fee_costs(report: YearReport) -> Decimal:
+    return sum(
+        (e.cost_pln for e in report.papiery_wart_events if e.event_type == "fee"),
+        Decimal("0"),
+    )
+
+
+def _render_section_c_w17(
+    report: YearReport,
+    *,
+    pos_c: dict[str, int],
+) -> tuple[list[str], Decimal]:
+    """Sekcja C wariant 17 (rok ≤ 2024): wszystkie zagraniczne dochody w wierszu 2.
+
+    Razem na poz. 24-27. Pochodne sumują się z papierami w jednej linii (PIT-8C
+    od zagranicznego brokera nie istnieje, więc nie ma wiersza 1).
+    """
+    inne_inc = report.papiery_wart_income + report.pochodne_income
+    inne_cost = report.papiery_wart_cost + report.pochodne_cost
+    razem_pl = inne_inc - inne_cost
+    lines: list[str] = []
+    lines.append("▌ SEKCJA C — Dochody/straty z papierów wartościowych (art. 30b ust. 1)")
+    lines.append("    Wiersz 2 'Inne przychody':")
+    lines.append(f"      poz. {pos_c['wiersz_2_inc']} (Przychód):       {_fmt(inne_inc)} PLN")
+    lines.append(f"      poz. {pos_c['wiersz_2_cost']} (Koszty):         {_fmt(inne_cost)} PLN")
+    lines.extend(
+        _render_razem_block(
+            pos_c=pos_c,
+            razem_wiersz_num=3,
+            razem_inc=inne_inc,
+            razem_cost=inne_cost,
+            razem_pl=razem_pl,
+        )
+    )
     lines.append("")
     return lines, razem_pl
 
 
-def _render_pit38_filling_instructions(
-    report: YearReport, *, stock_income_correction: bool = True
-) -> list[str]:
-    """Konkretne instrukcje wypełnienia PIT-38, year-aware + path-aware.
+def _render_section_c_w18_compare(
+    report: YearReport,
+    *,
+    pos_c: dict[str, int],
+) -> tuple[list[str], Decimal]:
+    """Sekcja C wariant 18 (rok ≥ 2025) — compare-with-prefill.
 
-    Wariant 17 (rok ≤ 2024): sekcja C 22-27, sekcja D 29-33, sekcja L poz. 69.
-    Wariant 18 (rok ≥ 2025) ścieżka A (bez PIT-8C): sekcja C 22-29, sekcja D
-    31-35, sekcja L poz. 72.
-    Wariant 18 ścieżka B (z PIT-8C): wiersz 1 (poz. 20-21) = tool wins per D7,
-    z breakdown PIT-8C poz. 35 + różnica + cytat broszury MF dla cost_corr.
-    DIAGNOSTYKA tabela na końcu (D8) — zawsze dla has_pit8c.
-
-    Raises ``Pit8CReconciliationError`` gdy `abs(corr) / pit8c_*` > 5% (D9).
-
-    ``stock_income_correction`` (D6 default = True): gdy `income_corr > 0`,
-    nadwyżkę dodajemy do poz. 22 (defensywne wykazanie). OPT-OUT (False)
-    pomija — odpowiada filed PIT-38 2025 user'a.
+    KAS wstępnie wypełnia poz. 20-21 z PIT-8C brokera (Razem 35/36 obejmuje
+    akcje + CFD net). Kalkulator drukuje swoje wyliczenia jako referencję;
+    razem_pl informacyjny dla SEKCJI D.
     """
-    has_pit8c = report.pit8c is not None
-    if has_pit8c:
-        _check_pit8c_reconciliation(report)  # raises if > 5%
+    papiery_inc = report.papiery_wart_income
+    papiery_cost = report.papiery_wart_cost
+    papiery_pl = papiery_inc - papiery_cost
+    pochodne_pl = report.pochodne_income - report.pochodne_cost
+    razem_pl = papiery_pl + pochodne_pl
 
+    w1 = f"{pos_c['wiersz_1_inc']}-{pos_c['wiersz_1_cost']}"
+
+    lines: list[str] = []
+    lines.append("▌ SEKCJA C — Dochody/straty z papierów wartościowych (art. 30b ust. 1)")
+    lines.append(f"    Wiersz 1 'Z PIT-8C cz. D' (poz. {w1}):")
+    lines.append("")
+    lines.append("      Wyliczenie kalkulatora (papiery wartościowe):")
+    lines.append(f"        Przychód:  {_fmt(papiery_inc)} PLN")
+    lines.append(f"        Koszt:     {_fmt(papiery_cost)} PLN")
+    if papiery_pl > 0:
+        lines.append(f"        Dochód:    {_fmt(papiery_pl)} PLN")
+    elif papiery_pl < 0:
+        lines.append(f"        Strata:    {_fmt(-papiery_pl)} PLN")
+    else:
+        lines.append("        Bilans zerowy.")
+    lines.append("")
+    lines.append("      → Te wartości NIE idą do PIT-38 manualnie.")
+    lines.append(f"      → KAS wstępnie wypełnia poz. {w1} danymi z PIT-8C od brokera")
+    lines.append("        (usługa Twój e-PIT na podatki.gov.pl).")
+    lines.append("      → Otwórz PIT-38 w usłudze Twój e-PIT i sprawdź, czy wstępnie")
+    lines.append(f"        wypełnione poz. {w1} ≈ wartości powyżej. Jeśli daleko (>~1%)")
+    lines.append("        — możliwy rozjazd klasyfikatora STOCK/CFD lub broker pominął")
+    lines.append("        transakcje.")
+    lines.append("")
+    lines.append(f"    Wiersz 2 'Inne przychody' (poz. {pos_c['wiersz_2_inc']}-{pos_c['wiersz_2_cost']}):")
+    lines.append("")
+    lines.append("      Zostaw puste — broker ujął CFD/derywatywy w wierszu 3 PIT-8C")
+    lines.append(f"      (uwzględnione w Razem poz. 35/36 → trafiają do PIT-38 poz. {w1}")
+    lines.append("      przez wstępne wypełnienie).")
+    if report.pochodne_events:
+        lines.append("")
+        lines.append(f"      Wynik CFD netto wg kalkulatora (informacyjnie): {_fmt(pochodne_pl)} PLN")
+    lines.append("")
+    lines.append(
+        f"    Wiersz 3 'Zwolnione art. 21 ust. 1 pkt 105a' (poz. {pos_c['wiersz_3_inc']}-{pos_c['wiersz_3_cost']}):"
+    )
+    lines.append("")
+    lines.append("      0,00 / 0,00 (retail = 0)")
+    lines.append("")
+    lines.append(f"    Wiersz 4 'Razem' (poz. {pos_c['razem_inc']}-{pos_c['razem_strata']}):")
+    lines.append("")
+    lines.append("      Pole wstępnie wypełnione = wiersz 1; podatnik niczego nie wpisuje.")
+    lines.append("")
+    return lines, razem_pl
+
+
+def _render_loss_carryforward_note(
+    report: YearReport,
+    all_reports: list[YearReport],
+    razem_pl: Decimal,
+) -> list[str]:
+    """Nuta informacyjna o stratach z lat ubiegłych (art. 9 ust. 3 / ust. 6).
+
+    Branch A (razem_pl < 0): bieżąca strata zwiększa pulę na lata Y+1..Y+5.
+    Branch B (razem_pl > 0): listujemy straty widoczne w oknie Y-5..Y-1 z
+    propozycją 50% × strata/rok i hedgem o tym czego kalkulator nie wie.
+    Bilans zerowy (razem_pl == 0): pomijamy.
+
+    Kalkulator nie liczy automatycznie poz. 28/30 — kwota do wpisania
+    zostaje decyzją podatnika (pula może obejmować straty spoza Exante:
+    krypto, inny broker, papiery PL).
+    """
+    if razem_pl == 0:
+        return []
+
+    lines: list[str] = []
+    pos_d = _pit38_section_d_positions(report.year)
+    Y = report.year
+
+    if razem_pl < 0:
+        loss = -razem_pl
+        half = (loss / Decimal("2")).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )  # 50% cap, art. 9 ust. 3
+        next_pos = _pit38_section_d_positions(Y + 1)["straty_lat"]
+        lines.append("▌ STRATY Z LAT UBIEGŁYCH (art. 9 ust. 3 ustawy o PIT)")
+        lines.append(f"    Bieżący rok ({Y}) kończy się stratą {_fmt(loss).strip()} PLN — brak dochodu")
+        lines.append("    do pomniejszenia w tym roku.")
+        lines.append(f"    Ta strata zwiększa pulę dostępną w PIT-38 lat {Y + 1}–{Y + 5}.")
+        lines.append("    Limity (z ustawy):")
+        lines.append(f"      · klasyczny tryb: max 50% × {_fmt(loss).strip()} = {_fmt(half).strip()} PLN/rok")
+        lines.append("      · od 2019 (wybór podatnika): jednorazowo do 5 000 000 PLN, reszta klasycznie")
+        lines.append(f"    Jeśli następny rok ({Y + 1}) zakończy się dochodem, wpisz odpowiednią")
+        lines.append(f"    kwotę w poz. {next_pos} PIT-38 ({Y + 1}).")
+        lines.append("")
+        return lines
+
+    # razem_pl > 0
+    income = razem_pl
+    pos_strat = pos_d["straty_lat"]
+    by_year = {r.year: r for r in all_reports}
+    window_years = list(range(Y - 5, Y))
+
+    lines.append(f"▌ STRATY Z LAT UBIEGŁYCH (art. 9 ust. 3 ustawy o PIT) — poz. {pos_strat}")
+    lines.append("    Dochód PIT-38 z art. 30b można pomniejszyć o stratę z 5 poprzednich")
+    lines.append("    lat podatkowych (z TEGO SAMEGO źródła — kapitały pieniężne).")
+    lines.append("")
+    lines.append(f"    W oknie {Y - 5}–{Y - 1} kalkulator widzi:")
+
+    proposals: list[tuple[int, Decimal, Decimal]] = []
+    for wy in window_years:
+        if wy in by_year:
+            pl = by_year[wy].pit38_profit_loss
+            if pl < 0:
+                strata = -pl
+                half = (strata / Decimal("2")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                lines.append(
+                    f"      · {wy}: strata {_fmt(strata).strip()} PLN  → max 50% = {_fmt(half).strip()} PLN"
+                )
+                proposals.append((wy, strata, half))
+            elif pl > 0:
+                lines.append(f"      · {wy}: zysk {_fmt(pl).strip()} PLN (brak straty)")
+            else:
+                lines.append(f"      · {wy}: bilans zerowy (brak straty)")
+        else:
+            lines.append(f"      · {wy}: brak danych w kalkulatorze")
+
+    if proposals:
+        sum_half = sum((p[2] for p in proposals), Decimal("0"))
+        lines.append("")
+        lines.append(f"    Suma propozycji (50%/rok klasycznie): {_fmt(sum_half).strip()} PLN")
+        lines.append(f"    Wartość poz. {pos_strat} ≤ dochód za ten rok ({_fmt(income).strip()} PLN)")
+        lines.append("    (odliczenie nie może wytworzyć nowej straty).")
+        lines.append("")
+        lines.append("    Tryb 5 mln (od 2019): jednorazowo do 5 000 000 PLN ze straty")
+        lines.append("    jednego roku — dla Twoich kwot praktycznie = pełna strata danego roku.")
+    else:
+        lines.append("")
+        lines.append("    Brak strat w widzianym oknie — kalkulator nie sugeruje konkretnej kwoty.")
+
+    lines.append("")
+    lines.append("    UWAGA — czego kalkulator nie wie:")
+    earliest = min(by_year) if by_year else Y
+    lines.append(f"      · strat z lat przed {earliest} (np. krypto 2017, inne źródła kapitałowe)")
+    lines.append("      · strat z innych brokerów / papierów PL")
+    lines.append("      · ile straty już rozliczyłeś w poprzednich latach")
+    lines.append(f"    Wartość poz. {pos_strat} jest decyzją podatnika.")
+    lines.append("")
+    return lines
+
+
+def _render_pit38_filling_instructions(
+    report: YearReport,
+    all_reports: list[YearReport],
+) -> list[str]:
+    """Konkretne instrukcje wypełnienia PIT-38, year-aware.
+
+    Wariant 17 (rok ≤ 2024): sekcja C wiersz 2 (poz. 22-23) + razem 24-27,
+    sekcja D 29-33, sekcja L poz. 69.
+    Wariant 18 (rok ≥ 2025): compare-with-prefill — kalkulator drukuje
+    wartości referencyjne dla poz. 20-21 (KAS wstępnie wypełnia z PIT-8C
+    brokera), instruuje zostawić wiersz 2 puste, sekcja D 31-35, sekcja L
+    poz. 72.
+
+    `all_reports` daje kontekst cross-year — używany tylko w
+    `_render_loss_carryforward_note` do skanowania okna Y-5..Y-1.
+    """
     pos_due, pos_deduct, pos_to_pay = _pit38_dividend_positions(report.year)
-    pos_c = _pit38_section_c_positions(report.year, has_pit8c=has_pit8c)
+    pos_c = _pit38_section_c_positions(report.year)
     pos_d = _pit38_section_d_positions(report.year)
     pos_pitzg = _pit38_pitzg_count_position(report.year)
     pos_total = _pit38_total_to_pay_position(report.year)
-    razem_wiersz_num = 4 if report.year >= 2025 else 3
 
     lines: list[str] = []
 
@@ -429,97 +449,75 @@ def _render_pit38_filling_instructions(
     lines.append("    poz. 7 (Rodzaj korekty): 1 = art. 81 OP (zwykła) — TYLKO jeśli korekta")
     lines.append("")
 
-    # SEKCJA C — dispatch ścieżka A (bez PIT-8C) vs B (z PIT-8C).
-    # Dla wariantu 17 pochodne u tego usera historycznie = 0, więc combined wartości
-    # w wierszu 2 są bytewise identyczne ze snapshotem (pre-Step 5 behavior).
-    inne_inc = report.papiery_wart_income + report.pochodne_income
-    inne_cost = report.papiery_wart_cost + report.pochodne_cost
+    has_events = bool(report.papiery_wart_events or report.pochodne_events)
 
-    if has_pit8c:
-        sec_c_lines, razem_pl = _render_section_c_path_b(
-            report,
-            pos_c=pos_c,
-            razem_wiersz_num=razem_wiersz_num,
-            stock_income_correction=stock_income_correction,
+    razem_pl = Decimal("0")
+    if has_events:
+        renderer = (
+            _render_section_c_w18_compare if report.year >= _PIT38_W18_FIRST_YEAR else _render_section_c_w17
         )
+        sec_c_lines, razem_pl = renderer(report, pos_c=pos_c)
         lines.extend(sec_c_lines)
-    elif report.papiery_wart_events or report.pochodne_events:
-        sec_c_lines, razem_pl = _render_section_c_path_a(
-            inne_inc=inne_inc,
-            inne_cost=inne_cost,
-            year=report.year,
-            pos_c=pos_c,
-            razem_wiersz_num=razem_wiersz_num,
-        )
-        lines.extend(sec_c_lines)
-    else:
-        razem_pl = Decimal("0")  # no sekcja C → no dochód/strata to compute
 
-    sekcja_c_rendered = bool(report.papiery_wart_events or report.pochodne_events) or has_pit8c
-    if sekcja_c_rendered:
+    if has_events:
         lines.append("▌ SEKCJA D — Obliczenie zobowiązania (art. 30b ust. 1)")
         if razem_pl > 0:
             podstawa = razem_pl.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
             podatek_pre = razem_pl * TAX_RATE  # poz. podatek_dochodu — zł, gr (NOT rounded)
             podatek = podatek_pre.quantize(Decimal("1"), rounding=ROUND_HALF_UP)  # poz. nalezny — pełne zł
-            lines.append(f"      poz. {pos_d['podstawa']} (Podstawa, do pełnych zł):  {podstawa} PLN")
-            lines.append(f"      poz. {pos_d['stawka']} (Stawka):                    19%")
+            lines.append(f"    poz. {pos_d['straty_lat']} (Straty z lat ubiegłych): puste — patrz uwaga ↓")
+            lines.append(f"    poz. {pos_d['podstawa']} (Podstawa, do pełnych zł):  {podstawa} PLN")
+            lines.append(f"    poz. {pos_d['stawka']} (Stawka):                    19%")
             lines.append(
-                f"      poz. {pos_d['podatek_dochodu']} (Podatek 19%):              {_fmt(podatek_pre)} PLN"
+                f"    poz. {pos_d['podatek_dochodu']} (Podatek 19%):              {_fmt(podatek_pre)} PLN"
             )
             lines.append(
-                f"      poz. {pos_d['podatek_za_granica']} (Podatek za granicą art. 30b ust. 5a/5b): 0,00 PLN"
+                f"    poz. {pos_d['podatek_za_granica']} (Podatek za granicą art. 30b ust. 5a/5b): 0,00 PLN"
             )
             lines.append(
-                f"      poz. {pos_d['podatek_nalezny']} (Podatek należny, do pełnych zł):        {podatek} PLN"
+                f"    poz. {pos_d['podatek_nalezny']} (Podatek należny, do pełnych zł):        {podatek} PLN"
             )
         else:
-            lines.append(f"      poz. {pos_d['podstawa']} (Podstawa):       0  (strata, brak podatku)")
-            lines.append(f"      poz. {pos_d['stawka']}-{pos_d['podatek_nalezny']}:               0 / puste")
+            lines.append(f"    poz. {pos_d['podstawa']} (Podstawa):       0  (strata, brak podatku)")
+            lines.append(f"    poz. {pos_d['stawka']}-{pos_d['podatek_nalezny']}:               0 / puste")
         lines.append("")
+        lines.extend(_render_loss_carryforward_note(report, all_reports, razem_pl))
 
     if report.dividends_income_pln > 0:
         lines.append("▌ SEKCJA G — Zryczałtowany podatek od dywidend zagr. (art. 30a)")
         lines.append(
-            f"      poz. {pos_due} (Zryczałt. podatek 19%):      {_fmt(report.dividends_tax_due_pln)} PLN"
+            f"    poz. {pos_due} (Zryczałt. podatek 19%):      {_fmt(report.dividends_tax_due_pln)} PLN"
         )
         lines.append(
-            f"      poz. {pos_deduct} (Podatek za granicą do odl.): "
+            f"    poz. {pos_deduct} (Podatek za granicą do odl.): "
             f"{_fmt(report.dividends_tax_to_deduct_pln)} PLN"
         )
-        lines.append("        UWAGA: kwota PO LIMICIE per-kraj UPO,")
-        lines.append(f"               NIE faktyczny WHT pobrany ({_fmt(report.dividends_tax_paid_pln)} PLN)")
+        lines.append("      UWAGA: kwota po limicie wynikającym z UPO (liczona per kraj),")
         lines.append(
-            f"      poz. {pos_to_pay} (Różnica do zapłaty):         {_fmt(report.dividends_tax_to_pay_pln)} PLN"
+            f"             NIE faktyczny podatek u źródła pobrany ({_fmt(report.dividends_tax_paid_pln)} PLN)"
         )
-        lines.append("        Zaokrąglić DO PEŁNYCH GROSZY w górę")
-        lines.append("        (wyjątek z art. 63 § 1a OP dla art. 30a — NIE do pełnych zł)")
+        lines.append(
+            f"    poz. {pos_to_pay} (Różnica do zapłaty):         {_fmt(report.dividends_tax_to_pay_pln)} PLN"
+        )
+        lines.append("      Zaokrąglić DO PEŁNYCH GROSZY w górę")
+        lines.append("      (wyjątek z art. 63 § 1a OP dla art. 30a — NIE do pełnych zł)")
         lines.append("")
 
     _papiery_tax_pre = max(Decimal("0"), razem_pl * TAX_RATE)
     podatek_papiery = _papiery_tax_pre.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
     podatek_dyw = report.dividends_tax_to_pay_pln
     razem = podatek_papiery + podatek_dyw
-    lines.append(f"▌ PODATEK DO ZAPŁATY (poz. {pos_total} PIT-38)")
+    lines.append(f"▌ POZYCJA {pos_total} — PODATEK DO ZAPŁATY")
     lines.append(
-        f"      = poz. {pos_d['podatek_nalezny']} ({podatek_papiery} zł) + poz. {pos_to_pay} ({_fmt(podatek_dyw)} zł)"
+        f"    = poz. {pos_d['podatek_nalezny']} ({podatek_papiery} zł) + poz. {pos_to_pay} ({_fmt(podatek_dyw)} zł)"
     )
-    lines.append(f"      = {_fmt(razem)} PLN")
+    lines.append(f"    = {_fmt(razem)} PLN")
     lines.append("")
 
     pitzg_count = len(_papiery_country_breakdown(report))
     lines.append("▌ SEKCJA L — Załączniki")
-    lines.append(f"      poz. {pos_pitzg} (Liczba załączników PIT/ZG): {pitzg_count}")
+    lines.append(f"    poz. {pos_pitzg} (Liczba załączników PIT/ZG): {pitzg_count}")
     lines.append("")
-
-    if report.year >= 2025 and not has_pit8c and sekcja_c_rendered:
-        lines.append(f"⚠ UWAGA wariant 18: brak config/pit8c/{report.year}.json — generuję bez wiersza 1.")
-        lines.append("  Jeśli broker wystawił PIT-8C — utwórz config i regeneruj raport.")
-        lines.append("  Ścieżka A: cały obrót w wierszu drugim + zwolnione w wierszu trzecim (zerowe).")
-        lines.append("")
-
-    if has_pit8c:
-        lines.extend(_render_diagnostyka_pit8c(report))
 
     return lines
 
@@ -561,11 +559,12 @@ def _render_pitzg_attachments(report: YearReport) -> list[str]:
         lines.append("   Sekcja C.3 (DOCHODY ROZLICZANE W PIT-38):")
         lines.append(f"     poz. 29 (Dochód art. 30b ust. 5a/5b):  {_fmt(dochod_pitzg)} PLN")
         if net < 0:
-            lines.append(f"        (kraj na minusie {_fmt(-net)} PLN; przychód był → wpisujemy 0,00)")
+            lines.append(f"        (kraj zakończył rok stratą {_fmt(-net)} PLN — w PIT/ZG")
+            lines.append("        deklarujemy DOCHÓD; straty zagranicznej nie wykazujemy → 0,00)")
         elif net == 0:
-            lines.append("        (break-even)")
+            lines.append("        (bilans zerowy)")
         lines.append("     poz. 30 (Podatek za granicą):           0,00 PLN")
-        lines.append("        (typowo brak WHT od kapitałowych dla nierezydentów PL)")
+        lines.append("        (typowo brak podatku u źródła od kapitałowych dla nierezydentów PL)")
         lines.append("     poz. 31 (Dochód art. 30b ust. 5e/5f, waluty wirtualne): puste")
         lines.append("     poz. 32 (Podatek za granicą od poz. 31):                puste")
         lines.append("")
@@ -583,40 +582,42 @@ def _render_pitzg_attachments(report: YearReport) -> list[str]:
         lines.append("          PIT/ZG dotyczy art. 27, 30b, 30c, 30e — NIE art. 30a")
         lines.append("   Dane już ujęte zbiorczo w PIT-38 sekcji G powyżej.")
         lines.append("")
-        lines.append(
-            f"   (Per-kraj: brutto {_fmt(cd.income_pln)} PLN | "
-            f"WHT {_fmt(cd.tax_paid_pln)} PLN | "
-            f"do odliczenia {_fmt(cd.tax_to_deduct_pln)} PLN | "
-            f"do zapłaty {_fmt(c_to_pay)} PLN)"
-        )
+        lines.append("   Per kraj (informacyjnie):")
+        lines.append(f"     · brutto:             {_fmt(cd.income_pln)} PLN")
+        lines.append(f"     · podatek u źródła:   {_fmt(cd.tax_paid_pln)} PLN")
+        lines.append(f"     · do odliczenia:      {_fmt(cd.tax_to_deduct_pln)} PLN")
+        lines.append(f"     · do zapłaty:         {_fmt(c_to_pay)} PLN")
         lines.append("")
 
-    fee_costs = sum(
-        (e.cost_pln for e in report.papiery_wart_events if e.event_type == "fee"),
-        Decimal("0"),
-    )
+    fee_costs = _fee_costs(report)
     if fee_costs > 0:
-        # Year/path-aware: fees w wierszu 2 (path A, poz. 23) lub wierszu 1 (path B, poz. 21).
-        # Strata position: w17 → poz. 27, w18 → poz. 29.
-        has_pit8c = report.pit8c is not None
-        pos_c = _pit38_section_c_positions(report.year, has_pit8c=has_pit8c)
-        fees_pos = pos_c["wiersz_1_cost"] if has_pit8c else pos_c["wiersz_2_cost"]
+        pos_c = _pit38_section_c_positions(report.year)
+        if report.year >= _PIT38_W18_FIRST_YEAR:
+            fees_pos = pos_c["wiersz_1_cost"]
+            fees_note = f"wliczone we wstępnie wypełnioną poz. {fees_pos} PIT-38 " "(PIT-8C brokera, poz. 36)"
+        else:
+            fees_pos = pos_c["wiersz_2_cost"]
+            fees_note = f"wliczone w łączną poz. {fees_pos} PIT-38"
         strata_pos = pos_c["razem_strata"]
-        lines.append(f"ℹ Opłaty brokera ({_fmt(fee_costs)} PLN) wliczone w łączną poz. {fees_pos} PIT-38,")
-        lines.append("  ale NIE atrybuowane do kraju w tym narzędziu (broker = Cypr formalnie).")
+        lines.append(f"ℹ Opłaty brokera ({_fmt(fee_costs)} PLN) {fees_note},")
+        lines.append("  ale NIE atrybuowane do kraju w kalkulatorze (broker = Cypr formalnie).")
         lines.append(f"  Stąd Σ poz. 29 PIT/ZG < |poz. {strata_pos} PIT-38| o tę kwotę.")
         lines.append("")
 
     return lines
 
 
-def generate_year_report(report: YearReport, *, stock_income_correction: bool = True) -> str:
+def generate_year_report(
+    report: YearReport,
+    all_reports: list[YearReport] | None = None,
+) -> str:
     """Generate text report for a single tax year — three PIT-38 sections.
 
-    ``stock_income_correction`` (D6 default = True) — gdy ścieżka B (z PIT-8C)
-    i tool's STOCK income > PIT-8C poz. 35, dodaj nadwyżkę do poz. 22 PIT-38.
-    Wire'd przez Step 8 CLI flag ``--no-stock-income-correction``.
+    `all_reports` daje cross-year kontekst dla loss carryforward (art. 9 ust. 3)
+    — okno Y-5..Y-1. None → fallback do [report] (tylko własny rok).
     """
+    if all_reports is None:
+        all_reports = [report]
     lines: list[str] = []
 
     # ───────────────────────────────────────────────────────────────
@@ -624,17 +625,14 @@ def generate_year_report(report: YearReport, *, stock_income_correction: bool = 
     # ───────────────────────────────────────────────────────────────
     lines.append("═" * 70)
     lines.append(f" Papiery wartościowe — Rok {report.year}")
-    lines.append(" → PIT-38 sekcja C wiersz 2 'Inne przychody' (poz. 22-23)")
+    lines.append(_papiery_header_destination(report.year))
     lines.append("═" * 70)
     lines.append("")
     lines.append(f"PRZYCHÓD:                                      {_fmt(report.papiery_wart_income)} PLN")
     lines.append(f"KOSZTY UZYSKANIA PRZYCHODU:                    {_fmt(report.papiery_wart_cost)} PLN")
     papiery_pl = report.papiery_wart_income - report.papiery_wart_cost
     lines.append(f"DOCHÓD / STRATA:                               {_fmt(papiery_pl)} PLN")
-    fee_costs = sum(
-        (e.cost_pln for e in report.papiery_wart_events if e.event_type == "fee"),
-        Decimal("0"),
-    )
+    fee_costs = _fee_costs(report)
     if fee_costs > 0:
         lines.append(f"  w tym opłaty brokera:                          {_fmt(fee_costs)} PLN")
     lines.append("")
@@ -652,7 +650,7 @@ def generate_year_report(report: YearReport, *, stock_income_correction: bool = 
     # ───────────────────────────────────────────────────────────────
     lines.append("═" * 70)
     lines.append(f" Instrumenty pochodne — Rok {report.year}")
-    lines.append(" → PIT-38 sekcja C wiersz 2 'Inne przychody' (poz. 22-23, sumują z papierami)")
+    lines.append(_pochodne_header_destination(report.year))
     lines.append("═" * 70)
     lines.append("")
     if report.pochodne_events:
@@ -786,10 +784,10 @@ def generate_year_report(report: YearReport, *, stock_income_correction: bool = 
     # INSTRUKCJA WYPEŁNIENIA PIT-38 — co wpisać w jaką komórkę
     # ───────────────────────────────────────────────────────────────
     lines.append("═" * 70)
-    variant_suffix = " (wariant 18)" if report.year >= 2025 else ""
+    variant_suffix = " (wariant 18)" if report.year >= _PIT38_W18_FIRST_YEAR else ""
     lines.append(f" INSTRUKCJA WYPEŁNIENIA PIT-38 — Rok {report.year}{variant_suffix}")
     lines.append("═" * 70)
-    lines.extend(_render_pit38_filling_instructions(report, stock_income_correction=stock_income_correction))
+    lines.extend(_render_pit38_filling_instructions(report, all_reports))
 
     # ───────────────────────────────────────────────────────────────
     # ZAŁĄCZNIKI PIT/ZG — które kraje, z jakimi liczbami, dlaczego
@@ -807,13 +805,13 @@ def generate_positions_report(
     year: int,
 ) -> str:
     """Generate open positions report as of year-end."""
-    lines: list[str] = []
-    lines.append("═" * 60)
+    lines: list[str] = [""]
+    lines.append("═" * 70)
     lines.append(f" Pozycje otwarte na 31.12.{year} (przeniesione na {year + 1})")
-    lines.append("═" * 60)
+    lines.append("═" * 70)
     lines.append("")
     lines.append(f"{'Instrument':<16}{'Konto':<16}{'Ilość':>10}{'Śr. koszt':>12}{'Waluta':>8}")
-    lines.append("─" * 62)
+    lines.append("─" * 70)
 
     for (account_id, symbol), lots in sorted(positions.items()):
         total_qty = sum(lot.quantity for lot in lots)
@@ -902,15 +900,8 @@ def write_reports(
     reports: list[YearReport],
     positions: dict[tuple[str, str], list[FifoLot]],
     output_dir: str | Path,
-    *,
-    stock_income_correction: bool = True,
 ) -> list[Path]:
-    """Write all reports to output directory.
-
-    ``stock_income_correction`` (D6 default = True) plumbed to
-    ``generate_year_report`` for ścieżki B (z PIT-8C). CLI flag
-    ``--no-stock-income-correction`` (Step 8) wstrzykuje False.
-    """
+    """Write all reports to output directory."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -918,7 +909,7 @@ def write_reports(
 
     for report in reports:
         # Year report
-        text = generate_year_report(report, stock_income_correction=stock_income_correction)
+        text = generate_year_report(report, all_reports=reports)
 
         # Add positions for years that have them
         text += generate_positions_report(positions, report.year)

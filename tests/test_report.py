@@ -19,6 +19,23 @@ from pit_exante.report import generate_csv, generate_year_report
 TRANSACTIONS_PATH = ROOT / "data" / "transactions.json"
 
 
+# Polish locale helpers — mirror src/pit_exante/report.py::_fmt convention.
+# _fmt produces "70 388,62" (NBSP thousand sep, comma decimal sep).
+def _pl_fmt(value) -> str:
+    """Format Decimal jak _fmt w report.py: NBSP tysięczne + przecinek dziesiętny."""
+    s = f"{value:,.2f}"
+    return s.replace(",", "\xa0").replace(".", ",")
+
+
+def _pl_to_decimal(s: str) -> Decimal:
+    """Odwrotność _pl_fmt: '70 388,62' / '70\\xa0388,62' → Decimal('70388.62')."""
+    return Decimal(s.replace("\xa0", "").replace(" ", "").replace(",", "."))
+
+
+# Regex group capturing PL-formatted amount (digits + NBSP/space thousand sep + comma decimal).
+_PL_AMOUNT_RE = r"[\d  ]+,\d{2}"
+
+
 @pytest.fixture(scope="module")
 def report_2025():
     """2025 = year with VIG.US (CFD) — exercises both papiery and pochodne sections."""
@@ -55,32 +72,57 @@ class TestSectionHeaders:
 
 
 class TestPIT38Labels:
-    """PIT-38(17) sekcja C dla zagranicznego brokera (Exante, brak PIT-8C):
-    wiersz 1 (poz. 20-21) = 'Przychody wykazane w PIT-8C Część D' — NIE używamy
-    wiersz 2 (poz. 22-23) = 'Inne przychody' — TU lądują wszystkie nasze dane
-    wiersz 3 (poz. 24-27) = 'Razem' — suma wszystkich wierszy."""
+    """PIT-38 sekcja C — year-aware mapowanie:
 
-    def test_papiery_maps_to_wiersz_2_inne_przychody(self, report_2025):
+    Wariant 17 (rok ≤ 2024): zagr. broker bez PIT-8C → wiersz 2 'Inne przychody' (poz. 22-23).
+    Wariant 18 (rok ≥ 2025): broker (Exante = Cypr) wystawia PIT-8C → wiersz 1 (poz. 20-21,
+    wstępnie wypełnione przez KAS).
+    """
+
+    def test_papiery_header_year_aware_w18(self, report_2025):
+        # 2025 = wariant 18 → wiersz 1 + poz. 20-21 (pre-fill)
         text, _ = report_2025
         idx = text.find("Papiery wartościowe")
         assert idx != -1
         section_header = text[idx : idx + 200]
-        assert "wiersz 2" in section_header, (
-            "Papiery z zagr. brokera (brak PIT-8C) idą do wiersza 2 'Inne przychody', "
-            "NIE do wiersza 1 (który jest dla PIT-8C Część D, poz. 20-21)"
-        )
-        assert "poz. 22" in section_header
+        assert (
+            "wiersz 1" in section_header
+        ), "Wariant 18: papiery → PIT-8C poz. 35/36 → PIT-38 wiersz 1 (poz. 20-21)"
+        assert "poz. 20-21" in section_header
 
-    def test_pochodne_maps_to_wiersz_2_inne_przychody(self, report_2025):
+    def test_papiery_header_year_aware_w17(self, all_year_reports):
+        # Wariant 17 (rok ≤ 2024): papiery → wiersz 2 (poz. 22-23)
+        for year, text, _r in all_year_reports:
+            if year >= 2025:
+                continue
+            idx = text.find("Papiery wartościowe")
+            assert idx != -1
+            section_header = text[idx : idx + 200]
+            assert "wiersz 2" in section_header, f"Year {year}: w17 → wiersz 2"
+            assert "poz. 22-23" in section_header
+            return
+        pytest.skip("No w17 year")
+
+    def test_pochodne_header_year_aware_w18(self, report_2025):
         text, _ = report_2025
         idx = text.find("Instrumenty pochodne")
         assert idx != -1
         section_header = text[idx : idx + 200]
-        assert "wiersz 2" in section_header, (
-            "Pochodne z zagr. brokera idą do wiersza 2 'Inne przychody', "
-            "sumują się z papierami w tej samej linii"
-        )
-        assert "poz. 22" in section_header
+        # Wariant 18: CFD ujęte w PIT-8C poz. 35/36 razem z papierami
+        assert "PIT-8C poz. 35/36" in section_header
+        assert "broker łączy CFD i akcje" in section_header
+
+    def test_pochodne_header_year_aware_w17(self, all_year_reports):
+        for year, text, _r in all_year_reports:
+            if year >= 2025:
+                continue
+            idx = text.find("Instrumenty pochodne")
+            assert idx != -1
+            section_header = text[idx : idx + 200]
+            assert "wiersz 2" in section_header, f"Year {year}: w17 → wiersz 2"
+            assert "poz. 22-23" in section_header
+            return
+        pytest.skip("No w17 year")
 
     def test_no_legacy_pit8c_position_references_in_section_headers(self, report_2025):
         """Guardrail: stare etykiety 'PIT-8C poz. 23-24' / 'poz. 27-28' były błędne.
@@ -104,18 +146,18 @@ class TestPIT38Labels:
 class TestSectionSums:
     def test_papiery_income_in_text(self, report_2025):
         text, r = report_2025
-        # papiery_wart_income should appear formatted with grosze
-        formatted = f"{r.papiery_wart_income:,.2f}"
+        # papiery_wart_income should appear formatted with grosze (PL: NBSP + comma)
+        formatted = _pl_fmt(r.papiery_wart_income)
         assert formatted in text, f"Expected papiery income {formatted} in report"
 
     def test_pochodne_income_in_text(self, report_2025):
         text, r = report_2025
-        formatted = f"{r.pochodne_income:,.2f}"
+        formatted = _pl_fmt(r.pochodne_income)
         assert formatted in text, f"Expected pochodne income {formatted} in report"
 
     def test_pit38_total_in_text(self, report_2025):
         text, r = report_2025
-        formatted = f"{r.pit38_income:,.2f}"
+        formatted = _pl_fmt(r.pit38_income)
         # Total appears in summary section
         assert formatted in text
 
@@ -167,7 +209,7 @@ class TestPerRowDeductSumsToCountryAggregate:
             if len(line) >= 10 and line[:4].isdigit() and line[4] == "-":
                 # Ostatnia liczba w linii to "Do odliczenia"
                 tokens = line.split()
-                deducts.append(Decimal(tokens[-1]))
+                deducts.append(_pl_to_decimal(tokens[-1]))
         return deducts
 
     def test_usa_per_row_sum_equals_aggregate(self, report_2025):
@@ -229,7 +271,7 @@ class TestPerRowDeductSumsAllYears:
             line = line.strip()
             if len(line) >= 10 and line[:4].isdigit() and line[4] == "-":
                 tokens = line.split()
-                deducts.append(Decimal(tokens[-1]))
+                deducts.append(_pl_to_decimal(tokens[-1]))
         return deducts
 
     def test_per_row_sum_equals_aggregate_for_every_year(self, all_year_reports):
@@ -271,12 +313,12 @@ class TestPit38DividendPositions:
 
 
 class TestPit38SectionCPositions:
-    """Step 4: numeracja sekcji C wg wariantu 17 vs 18 + obecności PIT-8C."""
+    """Numeracja sekcji C wg wariantu formularza."""
 
-    def test_w17_2024_no_pit8c(self):
+    def test_w17_2024(self):
         from pit_exante.report import _pit38_section_c_positions
 
-        positions = _pit38_section_c_positions(2024, has_pit8c=False)
+        positions = _pit38_section_c_positions(2024)
         assert positions == {
             "wiersz_2_inc": 22,
             "wiersz_2_cost": 23,
@@ -286,37 +328,19 @@ class TestPit38SectionCPositions:
             "razem_strata": 27,
         }
 
-    def test_w17_2020_no_pit8c(self):
-        # Wariant 17 spans 2020-2024
+    def test_w17_2020(self):
         from pit_exante.report import _pit38_section_c_positions
 
-        positions = _pit38_section_c_positions(2020, has_pit8c=False)
+        positions = _pit38_section_c_positions(2020)
         assert positions["wiersz_2_inc"] == 22
         assert positions["razem_inc"] == 24
         assert "wiersz_1_inc" not in positions
         assert "wiersz_3_inc" not in positions
 
-    def test_w18_2025_no_pit8c(self):
+    def test_w18_2025(self):
         from pit_exante.report import _pit38_section_c_positions
 
-        positions = _pit38_section_c_positions(2025, has_pit8c=False)
-        assert positions == {
-            "wiersz_2_inc": 22,
-            "wiersz_2_cost": 23,
-            "wiersz_3_inc": 24,
-            "wiersz_3_cost": 25,
-            "razem_inc": 26,
-            "razem_cost": 27,
-            "razem_dochod": 28,
-            "razem_strata": 29,
-        }
-        assert "wiersz_1_inc" not in positions
-
-    def test_w18_2025_with_pit8c(self):
-        from pit_exante.report import _pit38_section_c_positions
-
-        positions = _pit38_section_c_positions(2025, has_pit8c=True)
-        # Full dict equality — guards against stray/typo keys (T4 from review)
+        positions = _pit38_section_c_positions(2025)
         assert positions == {
             "wiersz_1_inc": 20,
             "wiersz_1_cost": 21,
@@ -330,26 +354,12 @@ class TestPit38SectionCPositions:
             "razem_strata": 29,
         }
 
-    def test_w18_2026_with_pit8c(self):
+    def test_w18_2026(self):
         from pit_exante.report import _pit38_section_c_positions
 
-        positions = _pit38_section_c_positions(2026, has_pit8c=True)
+        positions = _pit38_section_c_positions(2026)
         assert positions["wiersz_1_inc"] == 20
         assert positions["razem_strata"] == 29
-
-    def test_w17_with_pit8c_raises(self):
-        # Plan §6.1: PIT-8C w wariancie 17 niedopuszczalny
-        from pit_exante.report import _pit38_section_c_positions
-
-        with pytest.raises(ValueError, match="wariantu 17"):
-            _pit38_section_c_positions(2024, has_pit8c=True)
-
-    def test_default_has_pit8c_is_false(self):
-        # Backward compat: wywołanie bez has_pit8c działa jak has_pit8c=False
-        from pit_exante.report import _pit38_section_c_positions
-
-        positions = _pit38_section_c_positions(2024)
-        assert "wiersz_1_inc" not in positions
 
 
 class TestPit38SectionDPositions:
@@ -433,13 +443,15 @@ class TestPit38FillingInstructions:
         assert "poz. 6" in instr
 
     def test_specifies_papiery_positions_22_23(self, report_2025):
+        # 2025 (w18 compare-with-prefill): wiersz 2 (poz. 22-23) is referenced
+        # but instructed to remain empty (broker covered CFDs in PIT-8C wiersz 3).
         text, r = report_2025
         if not r.papiery_wart_events:
             pytest.skip("No papiery wart events in 2025")
         idx = text.find("INSTRUKCJA WYPEŁNIENIA PIT-38")
         instr = text[idx:]
-        assert "poz. 22" in instr  # Inne przychody — Przychód
-        assert "poz. 23" in instr  # Inne przychody — Koszty
+        assert "poz. 22-23" in instr
+        assert "Zostaw puste" in instr
 
     def test_specifies_section_l_pitzg_count(self, report_2025):
         from pit_exante.report import _pit38_pitzg_count_position
@@ -460,7 +472,7 @@ class TestPit38FillingInstructions:
         idx = text.find("INSTRUKCJA WYPEŁNIENIA PIT-38")
         instr = text[idx:]
         expected_pos = _pit38_total_to_pay_position(r.year)
-        assert f"PODATEK DO ZAPŁATY (poz. {expected_pos} PIT-38)" in instr
+        assert f"POZYCJA {expected_pos} — PODATEK DO ZAPŁATY" in instr
 
     def test_2024_uses_legacy_dividend_position_47(self, all_year_reports):
         """Rok 2024 → poz. 47 dla "Różnica do zapłaty" (legacy)."""
@@ -474,125 +486,72 @@ class TestPit38FillingInstructions:
         pytest.skip("No 2024 report with dywidendy")
 
 
-class TestPit38Wariant18FallbackPath:
-    """Step 5 ścieżka A — wariant 18 bez PIT-8C config (year ≥ 2025, pit8c=None).
+class TestPit38Wariant18CompareWithPrefill:
+    """Wariant 18 (rok ≥ 2025) — tryb compare-with-prefill.
 
-    Wymaga że SEKCJA C zawiera wiersz 3 zwolnione (poz. 24-25 = 0,00),
-    razem na poz. 26-29, sekcja D na poz. 31-35, sekcja L na poz. 72,
-    plus WARN banner o braku configu PIT-8C.
+    US auto-pre-fillsuje poz. 20-21 z PIT-8C broker'a; tool drukuje swoje
+    obliczenie papiery wartościowe jako referencję, instruuje zostawić
+    wiersz 2 (poz. 22-23) puste. Sekcja D na poz. 31-35, L na poz. 72.
     """
 
-    def test_zwolnione_row_present_with_zero(self, all_year_reports):
-        """Wariant 18 fallback: wiersz 3 'Zwolnione art. 21.1.105a' poz. 24-25 = 0,00."""
+    def test_wiersz_1_compare_block_present(self, all_year_reports):
         for year, text, r in all_year_reports:
-            if year < 2025 or r.pit8c is not None:
-                continue
-            if not (r.papiery_wart_events or r.pochodne_events):
+            if year < 2025 or not (r.papiery_wart_events or r.pochodne_events):
                 continue
             idx = text.find("INSTRUKCJA WYPEŁNIENIA PIT-38")
             instr = text[idx:]
-            assert (
-                "Wiersz 3 'Zwolnione art. 21 ust. 1 pkt 105a':" in instr
-            ), f"Year {year}: missing Wiersz 3 zwolnione header"
-            assert "poz. 24 (Przychód):              0,00 PLN" in instr
-            assert "poz. 25 (Koszty):                0,00 PLN" in instr
+            assert "Wiersz 1 'Z PIT-8C cz. D' (poz. 20-21)" in instr
+            assert "Wyliczenie kalkulatora (papiery wartościowe):" in instr
+            assert "KAS wstępnie wypełnia" in instr
             return
-        pytest.skip("No w18 fallback year with sekcja C")
+        pytest.skip("No w18 year with sekcja C")
 
-    def test_razem_at_poz_26_29(self, all_year_reports):
-        """Wariant 18: razem ('Wiersz 4') at poz. 26-29 (NIE w17 24-27)."""
+    def test_wiersz_2_zostaw_puste(self, all_year_reports):
         for year, text, r in all_year_reports:
-            if year < 2025 or r.pit8c is not None:
-                continue
-            if not (r.papiery_wart_events or r.pochodne_events):
+            if year < 2025 or not (r.papiery_wart_events or r.pochodne_events):
                 continue
             idx = text.find("INSTRUKCJA WYPEŁNIENIA PIT-38")
             instr = text[idx:]
-            assert "Wiersz 4 'Razem':" in instr
-            assert "poz. 26 (Suma przychód)" in instr
-            assert "poz. 27 (Suma koszty)" in instr
+            assert "Wiersz 2 'Inne przychody' (poz. 22-23)" in instr
+            assert "Zostaw puste" in instr
             return
-        pytest.skip("No w18 fallback year with sekcja C")
+        pytest.skip("No w18 year with sekcja C")
+
+    def test_wiersz_4_razem_pre_fill(self, all_year_reports):
+        for year, text, r in all_year_reports:
+            if year < 2025 or not (r.papiery_wart_events or r.pochodne_events):
+                continue
+            idx = text.find("INSTRUKCJA WYPEŁNIENIA PIT-38")
+            instr = text[idx:]
+            assert "Wiersz 4 'Razem' (poz. 26-29)" in instr
+            assert "Pole wstępnie wypełnione = wiersz 1" in instr
+            return
+        pytest.skip("No w18 year with sekcja C")
 
     def test_section_d_at_poz_31_35(self, all_year_reports):
         """Wariant 18: sekcja D shifted +2 → 31 (Podstawa) … 35 (Należny)."""
         for year, text, r in all_year_reports:
-            if year < 2025 or r.pit8c is not None:
-                continue
-            if not (r.papiery_wart_events or r.pochodne_events):
+            if year < 2025 or not (r.papiery_wart_events or r.pochodne_events):
                 continue
             idx = text.find("INSTRUKCJA WYPEŁNIENIA PIT-38")
             instr = text[idx:]
-            # Either positive ("Podstawa, do pełnych zł") lub strata ("Podstawa)")
             assert "poz. 31 (Podstawa" in instr
-            # Strata path renders "poz. 32-35:" (stawka..nalezny), positive path
-            # renders "poz. 33 (Podatek 19%)" — at least one must appear.
             assert "poz. 33 (Podatek 19%)" in instr or "poz. 32-35:" in instr
-            # Wariant 17 numeracja musi NIE występować
             assert "poz. 29 (Podstawa" not in instr
             assert "poz. 30-33:" not in instr
             return
-        pytest.skip("No w18 fallback year with sekcja C")
+        pytest.skip("No w18 year with sekcja C")
 
-    def test_warn_banner_present(self, all_year_reports):
-        """Wariant 18 + brak PIT-8C + sekcja C rendered → WARN banner."""
-        for year, text, r in all_year_reports:
-            if year < 2025 or r.pit8c is not None:
-                continue
-            if not (r.papiery_wart_events or r.pochodne_events):
-                continue
-            idx = text.find("INSTRUKCJA WYPEŁNIENIA PIT-38")
-            instr = text[idx:]
-            assert f"UWAGA wariant 18: brak config/pit8c/{year}.json" in instr
-            assert "Ścieżka A" in instr
-            return
-        pytest.skip("No w18 fallback year with sekcja C")
+    def test_no_pit8c_warn_banner_anywhere(self, all_year_reports):
+        """After wycofanie ścieżki B: WARN o braku configu PIT-8C zlikwidowany."""
+        for _year, text, _r in all_year_reports:
+            assert "UWAGA wariant 18: brak config" not in text
+            assert "config/pit8c/" not in text
 
-    def test_warn_banner_suppressed_for_w17(self, all_year_reports):
-        """Wariant 17 (year < 2025) → BRAK WARN banneru."""
-        for year, text, _r in all_year_reports:
-            if year >= 2025:
-                continue
-            idx = text.find("INSTRUKCJA WYPEŁNIENIA PIT-38")
-            instr = text[idx:]
-            assert "UWAGA wariant 18" not in instr, f"Year {year}: spurious w18 banner"
-
-    def test_warn_banner_suppressed_for_path_b(self, all_year_reports):
-        """Has PIT-8C → ścieżka B → no "brak config" banner."""
-        from pit_exante.models import PitEightCInfo
-        from pit_exante.report import _render_pit38_filling_instructions
-
-        for year, _text, r in all_year_reports:
-            if year < 2025:
-                continue
-            # Programatically attach a small PIT-8C config to test path B
-            r.pit8c = PitEightCInfo(
-                year=year,
-                poz_35_income_pln=r.papiery_wart_income,
-                poz_36_cost_pln=r.papiery_wart_cost,
-                issuer_name="Test Broker",
-            )
-            try:
-                lines = _render_pit38_filling_instructions(r)
-                rendered = "\n".join(lines)
-                assert "UWAGA wariant 18: brak config" not in rendered
-            finally:
-                r.pit8c = None  # restore
-            return
-        pytest.skip("No w18 year for path B test")
-
-    def test_warn_banner_suppressed_when_no_sekcja_c(self, all_year_reports):
-        """Year ≥ 2025 ale brak transakcji → brak SEKCJA C → brak banneru."""
-        for year, text, r in all_year_reports:
-            if year < 2025 or r.pit8c is not None:
-                continue
-            if r.papiery_wart_events or r.pochodne_events:
-                continue
-            idx = text.find("INSTRUKCJA WYPEŁNIENIA PIT-38")
-            instr = text[idx:]
-            assert "UWAGA wariant 18" not in instr, f"Year {year}: WARN banner emitted despite no sekcja C"
-            return
-        pytest.skip("No w18 year without transactions")
+    def test_no_diagnostyka_section(self, all_year_reports):
+        """DIAGNOSTYKA tabela (path B feature) usunięta razem z importem PIT-8C."""
+        for _year, text, _r in all_year_reports:
+            assert "DIAGNOSTYKA — tool" not in text
 
 
 class TestPitZgAttachments:
@@ -697,47 +656,60 @@ class TestPit38InstructionsNumericalCorrectness:
         """Wyciągnij wartość PLN z linii 'poz. N (...): X PLN'.
 
         Pierwsze wystąpienie — dla pozycji występujących wielokrotnie (jak poz. 49
-        w 2025+: raz w sekcji G dla dywidend, raz w 'PODATEK DO ZAPŁATY (poz. 49 PIT-38)')
+        w 2025+: raz w sekcji G dla dywidend, raz w 'POZYCJA 49 — PODATEK DO ZAPŁATY')
         zwraca tę z dywidend. Tylko ta linia ma 'PLN' bezpośrednio po wartości; linia
-        'PODATEK DO ZAPŁATY' ma 'zł' i ' PLN' jest dopiero w następnej linii bez 'poz.'.
+        'POZYCJA … — PODATEK DO ZAPŁATY' ma 'zł' i ' PLN' jest dopiero w następnej linii bez 'poz.'.
         """
         import re
 
-        pattern = rf"poz\.\s*{position_num}\b[^\n]*?([\d,]+\.\d{{2}})\s*PLN"
+        pattern = rf"poz\.\s*{position_num}\b[^\n]*?({_PL_AMOUNT_RE})\s*PLN"
         match = re.search(pattern, section)
         if not match:
             return None
-        return Decimal(match.group(1).replace(",", ""))
+        return _pl_to_decimal(match.group(1))
 
-    def test_poz_22_matches_combined_inne_income(self, report_2025):
-        # Step 5: ścieżka A (bez PIT-8C) — poz. 22 = papiery + pochodne combined
-        text, r = report_2025
-        if not (r.papiery_wart_events or r.pochodne_events):
-            pytest.skip("No tax events")
-        section = self._instr_section(text)
-        value = self._extract_pln_after_position(section, 22)
-        assert value is not None, "poz. 22 not found in INSTRUKCJA"
-        expected = (r.papiery_wart_income + r.pochodne_income).quantize(Decimal("0.01"))
-        assert value == expected, f"poz. 22 shown {value} != combined inne_income {expected}"
+    def test_poz_22_w17_matches_combined_inne_income(self, all_year_reports):
+        # Wariant 17 (rok ≤ 2024): poz. 22 = papiery + pochodne combined.
+        # Wariant 18 nie wpisuje wartości do poz. 22 (compare-with-prefill).
+        verified = 0
+        for year, text, r in all_year_reports:
+            if year >= 2025:
+                continue
+            if not (r.papiery_wart_events or r.pochodne_events):
+                continue
+            section = self._instr_section(text)
+            value = self._extract_pln_after_position(section, 22)
+            assert value is not None, f"Year {year}: poz. 22 not found in INSTRUKCJA"
+            expected = (r.papiery_wart_income + r.pochodne_income).quantize(Decimal("0.01"))
+            assert value == expected, f"Year {year}: poz. 22 shown {value} != combined {expected}"
+            verified += 1
+        if verified == 0:
+            pytest.skip("No w17 year with sekcja C")
 
-    def test_poz_23_matches_combined_inne_cost(self, report_2025):
-        # Step 5: ścieżka A (bez PIT-8C) — poz. 23 = papiery + pochodne combined
-        text, r = report_2025
-        if not (r.papiery_wart_events or r.pochodne_events):
-            pytest.skip("No tax events")
-        section = self._instr_section(text)
-        value = self._extract_pln_after_position(section, 23)
-        assert value is not None, "poz. 23 not found in INSTRUKCJA"
-        expected = (r.papiery_wart_cost + r.pochodne_cost).quantize(Decimal("0.01"))
-        assert value == expected, f"poz. 23 shown {value} != combined inne_cost {expected}"
+    def test_poz_23_w17_matches_combined_inne_cost(self, all_year_reports):
+        verified = 0
+        for year, text, r in all_year_reports:
+            if year >= 2025:
+                continue
+            if not (r.papiery_wart_events or r.pochodne_events):
+                continue
+            section = self._instr_section(text)
+            value = self._extract_pln_after_position(section, 23)
+            assert value is not None, f"Year {year}: poz. 23 not found in INSTRUKCJA"
+            expected = (r.papiery_wart_cost + r.pochodne_cost).quantize(Decimal("0.01"))
+            assert value == expected, f"Year {year}: poz. 23 shown {value} != combined {expected}"
+            verified += 1
+        if verified == 0:
+            pytest.skip("No w17 year with sekcja C")
 
-    def test_strata_position_matches_abs_when_loss(self, all_year_reports):
-        """Strata netto → razem_strata = wartość bezwzględna.
-        Wariant 17: poz. 27. Wariant 18: poz. 29. Sprawdzane przez helper.
-        """
+    def test_strata_position_matches_abs_when_loss_w17(self, all_year_reports):
+        """w17: strata netto → poz. 27 = wartość bezwzględna. w18 nie pokazuje
+        wartości w razem (Pre-fill = wiersz 1)."""
         from pit_exante.report import _pit38_section_c_positions
 
         for year, text, r in all_year_reports:
+            if year >= 2025:
+                continue
             if not (r.papiery_wart_events or r.pochodne_events):
                 continue
             inne_inc = r.papiery_wart_income + r.pochodne_income
@@ -746,7 +718,7 @@ class TestPit38InstructionsNumericalCorrectness:
             if net >= 0:
                 continue
             section = self._instr_section(text)
-            pos_c = _pit38_section_c_positions(year, has_pit8c=(r.pit8c is not None))
+            pos_c = _pit38_section_c_positions(year)
             value = self._extract_pln_after_position(section, pos_c["razem_strata"])
             assert value is not None, f"Year {year}: poz. {pos_c['razem_strata']} not found"
             assert value == (-net).quantize(
@@ -775,7 +747,7 @@ class TestPit38InstructionsNumericalCorrectness:
             pytest.skip("No years with dividends")
 
     def test_podatek_do_zaplaty_total_sums_correctly(self, all_year_reports):
-        """'PODATEK DO ZAPŁATY (poz. N PIT-38)' — końcowa kwota = poz. 33 + dyw."""
+        """'POZYCJA N — PODATEK DO ZAPŁATY' — końcowa kwota = poz. nalezny + dyw."""
         import re
         from decimal import ROUND_HALF_UP
 
@@ -786,16 +758,16 @@ class TestPit38InstructionsNumericalCorrectness:
         for year, text, r in all_year_reports:
             section = self._instr_section(text)
             pos_total = _pit38_total_to_pay_position(year)
-            idx = section.find(f"PODATEK DO ZAPŁATY (poz. {pos_total}")
+            idx = section.find(f"POZYCJA {pos_total} — PODATEK DO ZAPŁATY")
             if idx == -1:
                 continue
             chunk = section[idx : idx + 400]
-            # Linia "= X PLN" (osobna od "= poz. 33 (...) + poz. N (... zł)")
-            match = re.search(r"=\s+([\d,]+\.\d{2})\s+PLN", chunk)
+            match = re.search(rf"=\s+({_PL_AMOUNT_RE})\s+PLN", chunk)
             assert match is not None, f"Year {year}: total '= X PLN' line missing"
-            shown = Decimal(match.group(1).replace(",", ""))
-            papiery_pl = r.papiery_wart_income - r.papiery_wart_cost
-            podatek_pap_pre = max(Decimal("0"), papiery_pl * TAX_RATE)
+            shown = _pl_to_decimal(match.group(1))
+            # Tool's net = papiery + pochodne (pochodne_net since 2025)
+            net = (r.papiery_wart_income + r.pochodne_income) - (r.papiery_wart_cost + r.pochodne_cost)
+            podatek_pap_pre = max(Decimal("0"), net * TAX_RATE)
             podatek_pap = podatek_pap_pre.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
             expected = (podatek_pap + r.dividends_tax_to_pay_pln).quantize(Decimal("0.01"))
             assert shown == expected, f"Year {year}: PODATEK DO ZAPŁATY shown {shown} != computed {expected}"
@@ -858,9 +830,9 @@ class TestPitZgNumericalCorrectness:
                 full_name = _country_full_name(country)
                 block = self._country_block(section, full_name)
                 assert block is not None, f"Year {year}: block for {full_name} missing"
-                match = re.search(r"poz\.\s*29[^\n]*?([\d,]+\.\d{2})\s*PLN", block)
+                match = re.search(rf"poz\.\s*29[^\n]*?({_PL_AMOUNT_RE})\s*PLN", block)
                 assert match is not None, f"Year {year}/{country}: poz. 29 missing"
-                shown = Decimal(match.group(1).replace(",", ""))
+                shown = _pl_to_decimal(match.group(1))
                 assert shown == expected, f"Year {year}/{country}: poz. 29 shown {shown}, expected {expected}"
                 verified += 1
         assert verified > 0, "Expected at least one country with PIT/ZG breakdown"
@@ -924,229 +896,6 @@ class TestQuantizeUsesHalfUp:
                     f"Python default HALF_EVEN diverges from calculator's HALF_UP for .005 values. "
                     f"Line: {stripped!r}"
                 )
-
-
-class TestPit38SciezkaBPit8c:
-    """Step 6 — ścieżka B (z PIT-8C config). Synthetic YearReport+pit8c.
-
-    Wariant 18 z PIT-8C: wiersz 1 PIT-8C (poz. 20-21 = tool wins),
-    wiersz 2 inne (CFD + opt. korekta STOCK), DIAGNOSTYKA na końcu.
-    ABORT gdy rozjazd > 5%. D6 default vs OPT-OUT param.
-    """
-
-    def _make_report(
-        self,
-        *,
-        year: int = 2025,
-        papiery_inc: str = "70388.62",
-        papiery_cost: str = "76134.80",
-        pochodne_inc: str = "11844.59",
-        pochodne_cost: str = "11799.76",
-        pit8c_inc: str = "70218.00",
-        pit8c_cost: str = "73639.00",
-        issuer: str = "Test Broker",
-    ):
-        from pit_exante.models import PitEightCInfo, YearReport
-
-        r = YearReport(year=year)
-        r.papiery_wart_income = Decimal(papiery_inc)
-        r.papiery_wart_cost = Decimal(papiery_cost)
-        r.pochodne_income = Decimal(pochodne_inc)
-        r.pochodne_cost = Decimal(pochodne_cost)
-        r.pit8c = PitEightCInfo(
-            year=year,
-            poz_35_income_pln=Decimal(pit8c_inc),
-            poz_36_cost_pln=Decimal(pit8c_cost),
-            issuer_name=issuer,
-        )
-        return r
-
-    def _render(self, r, **kwargs):
-        from pit_exante.report import _render_pit38_filling_instructions
-
-        return "\n".join(_render_pit38_filling_instructions(r, **kwargs))
-
-    def test_wiersz_1_pit8c_section_present(self):
-        r = self._make_report()
-        text = self._render(r)
-        assert "Wiersz 1 (PIT-8C cz. D od Test Broker):" in text
-        assert "poz. 20 (Przychód)" in text
-        assert "poz. 21 (Koszty)" in text
-
-    def test_poz_20_uses_tool_value_not_pit8c(self):
-        # D7 — tool zawsze wpisuje swoją liczbę
-        r = self._make_report(papiery_inc="70388.62", pit8c_inc="70218.00")
-        text = self._render(r)
-        assert "70,388.62 PLN" in text  # tool value
-        # PIT-8C value powinna pojawić się w breakdown
-        assert "PIT-8C poz. 35:" in text
-        assert "70,218.00" in text
-
-    def test_poz_20_breakdown_shows_difference(self):
-        r = self._make_report(papiery_inc="70388.62", pit8c_inc="70218.00")
-        text = self._render(r)
-        assert "+ różnica (tool − PIT-8C):        " in text
-        assert "170.62" in text  # the difference
-
-    def test_poz_20_includes_art_11a_citation(self):
-        r = self._make_report()
-        text = self._render(r)
-        assert "art. 11a ust. 2" in text
-
-    def test_poz_21_includes_broszura_mf_citation_when_cost_corr_positive(self):
-        # cost_corr > 0 — tool > PIT-8C → cytat broszury MF
-        r = self._make_report(papiery_cost="76134.80", pit8c_cost="73639.00")
-        text = self._render(r)
-        assert "Broszura MF do PIT-38, str. 4" in text
-        assert "niewykazanych przez podmiot" in text
-
-    def test_poz_21_omits_broszura_when_cost_corr_zero(self):
-        # cost_corr == 0 — żaden cytat nie potrzebny (mimo że tool wins)
-        r = self._make_report(papiery_cost="73639.00", pit8c_cost="73639.00")
-        text = self._render(r)
-        assert "Broszura MF" not in text
-
-    def test_d6_default_includes_korekta_in_poz_22(self):
-        # D6 default = True — gdy income_corr > 0, dodaj do poz. 22
-        r = self._make_report(papiery_inc="70388.62", pit8c_inc="70218.00", pochodne_inc="11844.59")
-        text = self._render(r, stock_income_correction=True)
-        # poz. 22 = 11844.59 (CFD) + 170.62 (korekta) = 12015.21
-        assert "12,015.21 PLN" in text
-        assert "+ korekta STOCK (D6 default):" in text
-
-    def test_d6_optout_excludes_korekta_from_poz_22(self):
-        # D6 OPT-OUT — poz. 22 = pochodne tylko (matches filed 2025)
-        r = self._make_report(papiery_inc="70388.62", pit8c_inc="70218.00", pochodne_inc="11844.59")
-        text = self._render(r, stock_income_correction=False)
-        # poz. 22 = 11844.59 (CFD only, NO korekta)
-        # Should appear as "poz. 22 (Przychód):       11,844.59 PLN" — match the line
-        # We need to check that 12015.21 does NOT appear and 11844.59 is referenced
-        lines = text.split("\n")
-        poz_22_line = next((line for line in lines if "poz. 22 (Przychód)" in line), None)
-        assert poz_22_line is not None
-        assert "11,844.59" in poz_22_line
-        assert "12,015.21" not in poz_22_line
-
-    def test_wiersz_3_zwolnione_zero(self):
-        r = self._make_report()
-        text = self._render(r)
-        assert "Wiersz 3 'Zwolnione art. 21 ust. 1 pkt 105a':" in text
-        assert "poz. 24 (Przychód):              0,00 PLN" in text
-        assert "poz. 25 (Koszty):                0,00 PLN" in text
-
-    def test_wiersz_4_razem_at_poz_26_29(self):
-        r = self._make_report()
-        text = self._render(r)
-        assert "Wiersz 4 'Razem':" in text
-        assert "poz. 26 (Suma przychód)" in text
-        assert "poz. 27 (Suma koszty)" in text
-
-    def test_diagnostyka_section_present(self):
-        r = self._make_report()
-        text = self._render(r)
-        assert "DIAGNOSTYKA — tool (art. 11a ust. 2) vs PIT-8C broker" in text
-        assert "poz. 20 (przychód):" in text  # diag table
-        assert "poz. 21 (koszty):" in text  # diag table
-
-    def test_diagnostyka_omitted_for_path_a(self):
-        # No PIT-8C → no DIAGNOSTYKA
-        from pit_exante.models import YearReport
-
-        r = YearReport(year=2025)
-        r.papiery_wart_income = Decimal("100")
-        r.papiery_wart_cost = Decimal("50")
-        # papiery_wart_events empty so sekcja C path A doesn't render either,
-        # but DIAGNOSTYKA gating is on has_pit8c, not events. So:
-        text = self._render(r)
-        assert "DIAGNOSTYKA" not in text
-
-    def test_abort_on_income_correction_above_5pct(self):
-        from pit_exante.pit8c import Pit8CReconciliationError
-
-        # tool=70000, pit8c=10000 → corr 60000, ratio 600% — ABORT
-        r = self._make_report(papiery_inc="70000.00", pit8c_inc="10000.00")
-        with pytest.raises(Pit8CReconciliationError, match="Rozjazd przychodu"):
-            self._render(r)
-
-    def test_abort_on_cost_correction_above_5pct(self):
-        from pit_exante.pit8c import Pit8CReconciliationError
-
-        # tool=80000, pit8c=10000 → corr 70000, ratio 700% — ABORT
-        r = self._make_report(papiery_cost="80000.00", pit8c_cost="10000.00")
-        with pytest.raises(Pit8CReconciliationError, match="Rozjazd kosztów"):
-            self._render(r)
-
-    def test_no_abort_when_within_5pct_tolerance(self):
-        # User's actual: 70388.62 vs 70218.00 = 0.24% — well within 5%
-        r = self._make_report()
-        # Should not raise
-        self._render(r)
-
-    def test_no_abort_when_pit8c_inc_is_zero(self):
-        # Edge: pit8c poz_35 = 0 → division skipped, no abort
-        r = self._make_report(pit8c_inc="0.00")
-        # Note: poz_35==0 AND poz_36>0 is rejected by loader, but this test
-        # constructs PitEightCInfo directly — testing the renderer's
-        # division-by-zero guard.
-        try:
-            self._render(r)
-        except ZeroDivisionError:
-            pytest.fail("Should not raise ZeroDivisionError for pit8c_inc=0")
-        except Exception:
-            pass  # Other exceptions OK — we're checking only for ZeroDivisionError
-
-    def test_abort_when_pit8c_zero_zero_but_tool_has_data(self):
-        # Step 7 B2 fix — degenerate PIT-8C config + non-zero tool = niespójność
-        from pit_exante.pit8c import Pit8CReconciliationError
-
-        r = self._make_report(
-            pit8c_inc="0.00",
-            pit8c_cost="0.00",
-            papiery_inc="100.00",
-            papiery_cost="50.00",
-        )
-        with pytest.raises(Pit8CReconciliationError, match="zerowe poz. 35/36"):
-            self._render(r)
-
-    def test_warn_when_income_corr_negative(self):
-        # Plan §6.1: tool < PIT-8C income — broker zawyżył; tool wins ale WARN
-        r = self._make_report(papiery_inc="69000.00", pit8c_inc="70218.00")
-        text = self._render(r)
-        assert "Tool niższy niż PIT-8C — broker zawyżył przychód" in text
-        assert "uzasadnienie metodologiczne" in text
-
-    def test_no_warn_when_income_corr_positive(self):
-        # When tool > PIT-8C, no negative-corr WARN (only breakdown line)
-        r = self._make_report(papiery_inc="70388.62", pit8c_inc="70218.00")
-        text = self._render(r)
-        assert "broker zawyżył przychód" not in text
-
-    def test_warn_when_cost_corr_negative(self):
-        # Plan §6.1: tool < PIT-8C cost — broker zawyżył; możliwy bug klasyfikatora
-        r = self._make_report(papiery_cost="73000.00", pit8c_cost="73639.00")
-        text = self._render(r)
-        assert "możliwy bug klasyfikatora" in text
-        assert "STOCK→CFD" in text
-
-    def test_no_warn_when_cost_corr_positive(self):
-        # cost_corr > 0 → broszura citation, NIE klasyfikator WARN
-        r = self._make_report(papiery_cost="76134.80", pit8c_cost="73639.00")
-        text = self._render(r)
-        assert "Broszura MF" in text
-        assert "możliwy bug klasyfikatora" not in text
-
-    def test_no_abort_when_pit8c_zero_zero_and_tool_zero(self):
-        # Step 7 B2 — zero/zero + tool zero is degenerate but consistent (no abort)
-        r = self._make_report(
-            pit8c_inc="0.00",
-            pit8c_cost="0.00",
-            papiery_inc="0.00",
-            papiery_cost="0.00",
-            pochodne_inc="0.00",
-            pochodne_cost="0.00",
-        )
-        # Should not raise
-        self._render(r)
 
 
 class TestCsvOutput:
@@ -1217,3 +966,152 @@ class TestCsvOutput:
         next(reader)
         types = {row[2] for row in reader}
         assert "dividend" in types, "CSV must mark dividend rows with Typ='dividend' for filtering"
+
+
+class TestLossCarryforwardNote:
+    """Step 12: nuta o stratach z lat ubiegłych (art. 9 ust. 3 / ust. 6).
+
+    Wbudowana w sekcji D — Branch A dla strat (zwiększa pulę przyszłą),
+    Branch B dla zysków (lista propozycji 50%/rok), break-even pomijany.
+    """
+
+    @staticmethod
+    def _make_report(year: int, profit_loss: Decimal) -> YearReport:  # noqa: F821
+        """Minimalny YearReport: jeden TaxEvent + ustawione totale, wystarczy
+        do wymuszenia renderingu sekcji C i D w generate_year_report."""
+        from datetime import date as _date
+
+        from pit_exante.models import InstrumentKind, TaxEvent, YearReport
+
+        income = Decimal("1000")
+        cost = income - profit_loss
+        ev = TaxEvent(
+            date=_date(year, 6, 15),
+            symbol="TEST.NYSE",
+            account_id="A",
+            event_type="sell",
+            income_original=Decimal("1000"),
+            cost_original=cost,
+            income_pln=income,
+            cost_pln=cost,
+            currency="USD",
+            nbp_rate=Decimal("4.0"),
+            details="test",
+            kind=InstrumentKind.SECURITY,
+        )
+        return YearReport(
+            year=year,
+            pit38_income=income,
+            pit38_cost=cost,
+            pit38_profit_loss=profit_loss,
+            pit38_events=[ev],
+            papiery_wart_income=income,
+            papiery_wart_cost=cost,
+            papiery_wart_events=[ev],
+        )
+
+    def test_year_break_even_no_note(self):
+        from pit_exante.report import _render_loss_carryforward_note
+
+        r = self._make_report(2022, Decimal("0"))
+        lines = _render_loss_carryforward_note(r, [r], Decimal("0"))
+        assert lines == []
+
+    def test_year_with_loss_renders_pool_for_future(self):
+        from pit_exante.report import _render_loss_carryforward_note
+
+        r = self._make_report(2024, Decimal("-1000.37"))
+        lines = _render_loss_carryforward_note(r, [r], Decimal("-1000.37"))
+        text = "\n".join(lines)
+        assert "STRATY Z LAT UBIEGŁYCH" in text
+        assert "stratą 1 000,37 PLN" in text
+        assert "lat 2025–2029" in text
+        assert "500,19 PLN/rok" in text
+        # next year is 2025 (w18) — straty_lat poz. = 30
+        assert "poz. 30 PIT-38 (2025)" in text
+
+    def test_year_with_profit_no_prior_losses_renders_note_without_proposals(self):
+        from pit_exante.report import _render_loss_carryforward_note
+
+        r = self._make_report(2020, Decimal("1500.42"))
+        lines = _render_loss_carryforward_note(r, [r], Decimal("1500.42"))
+        text = "\n".join(lines)
+        assert "STRATY Z LAT UBIEGŁYCH" in text
+        assert "poz. 28" in text  # w17
+        # 2020 → window 2015-2019 — no data
+        assert "brak danych w kalkulatorze" in text
+        assert "Brak strat w widzianym oknie" in text
+        assert "Suma propozycji" not in text
+
+    def test_year_with_profit_and_prior_losses_lists_proposals(self):
+        from pit_exante.report import _render_loss_carryforward_note
+
+        r2021 = self._make_report(2021, Decimal("-160.40"))
+        r2023 = self._make_report(2023, Decimal("200.13"))
+        lines = _render_loss_carryforward_note(r2023, [r2021, r2023], Decimal("200.13"))
+        text = "\n".join(lines)
+        assert "2021: strata 160,40 PLN" in text
+        assert "max 50% = 80,20 PLN" in text
+        assert "Suma propozycji (50%/rok klasycznie): 80,20 PLN" in text
+        assert "dochód za ten rok (200,13 PLN)" in text
+
+    def test_proposals_capped_by_current_year_income_message(self):
+        """Even if prior loss/2 > current dochód, note must cite the cap.
+
+        Strata 1000 (max 500/rok), dochód 50 → propozycja sumaryczna 500
+        ALE displayowane z constraint "≤ dochód za ten rok (50,00 PLN)".
+        """
+        from pit_exante.report import _render_loss_carryforward_note
+
+        r_loss = self._make_report(2023, Decimal("-1000.00"))
+        r_curr = self._make_report(2024, Decimal("50.00"))
+        lines = _render_loss_carryforward_note(r_curr, [r_loss, r_curr], Decimal("50.00"))
+        text = "\n".join(lines)
+        assert "max 50% = 500,00 PLN" in text
+        assert "Suma propozycji (50%/rok klasycznie): 500,00 PLN" in text
+        # Cap message references the smaller current-year income
+        assert "≤ dochód za ten rok (50,00 PLN)" in text
+        assert "odliczenie nie może wytworzyć nowej straty" in text
+
+    def test_section_d_prints_straty_lat_position_when_profit_w17(self):
+        from pit_exante.report import _render_pit38_filling_instructions
+
+        r = self._make_report(2024, Decimal("500"))
+        lines = _render_pit38_filling_instructions(r, [r])
+        text = "\n".join(lines)
+        # w17 (2024) → straty_lat poz. = 28
+        assert "poz. 28 (Straty z lat ubiegłych): puste — patrz uwaga ↓" in text
+
+    def test_section_d_prints_straty_lat_position_when_profit_w18(self):
+        from pit_exante.report import _render_pit38_filling_instructions
+
+        r = self._make_report(2025, Decimal("500"))
+        lines = _render_pit38_filling_instructions(r, [r])
+        text = "\n".join(lines)
+        # w18 (2025) → straty_lat poz. = 30
+        assert "poz. 30 (Straty z lat ubiegłych): puste — patrz uwaga ↓" in text
+
+    def test_section_d_no_straty_lat_row_when_loss(self):
+        """Loss branch keeps current 'Podstawa 0 / pozostałe puste' — no
+        separate straty_lat row (nothing to deduct from). Note still rendered."""
+        from pit_exante.report import _render_pit38_filling_instructions
+
+        r = self._make_report(2024, Decimal("-1000.37"))
+        lines = _render_pit38_filling_instructions(r, [r])
+        text = "\n".join(lines)
+        assert "poz. 28 (Straty z lat ubiegłych)" not in text
+        assert "STRATY Z LAT UBIEGŁYCH (art. 9 ust. 3 ustawy o PIT)" in text
+
+    def test_w17_vs_w18_loss_branch_points_to_correct_next_year_pos(self):
+        """Loss in 2024 (w17) → mentions 2025 next year, pointing to poz. 30 (w18).
+        Loss in 2023 (w17) → next year 2024 (w17), poz. 28.
+        """
+        from pit_exante.report import _render_loss_carryforward_note
+
+        r24 = self._make_report(2024, Decimal("-100"))
+        lines24 = _render_loss_carryforward_note(r24, [r24], Decimal("-100"))
+        assert "poz. 30 PIT-38 (2025)" in "\n".join(lines24)
+
+        r23 = self._make_report(2023, Decimal("-100"))
+        lines23 = _render_loss_carryforward_note(r23, [r23], Decimal("-100"))
+        assert "poz. 28 PIT-38 (2024)" in "\n".join(lines23)
