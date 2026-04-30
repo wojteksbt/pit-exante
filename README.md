@@ -129,6 +129,7 @@ FIFO działa osobno per `(rachunek, instrument)` z normalizacją subkont do kont
 ### Metodologia podatkowa
 
 - **Limit z art. 30a ust. 9 (dywidendy) liczony per-UPO 15% × brutto** ("interpretacja B", zgodna z linią KIS i praktyką biur typu PitFx). Alternatywna interpretacja A (cap = 19% × brutto) jest poparta wyrokiem NSA II FSK 1171/22 (28.02.2023) i niektórzy doradcy ją stosują — w obecnej implementacji nie jest dostępna jako tryb. Skala różnicy: dla 2024 r. rzędu ~6 PLN, dla portfeli z większą ekspozycją na kraje pobierające > 15% u źródła (Kanada bez NR301) może rosnąć liniowo.
+- **Straty z lat ubiegłych (art. 9 ust. 3 / ust. 6 ustawy o PIT)** — Tool drukuje notę informacyjną w sekcji D PIT-38 z propozycją kwot na podstawie strat z lat widocznych w danych Exante (okno Y-5..Y-1). Tool NIE liczy automatycznie poz. 28/30 i NIE zna strat z innych brokerów / krypto / papierów PL ani historii ile straty już rozliczyłeś — to zostaje decyzją podatnika.
 - **Autoconversion (EUR↔USD u brokera)** jest pomijana jako zdarzenie podatkowe — art. 24c dotyczy działalności gospodarczej. Komercyjne biura (np. PitFx) traktują ją jako zdarzenie kapitałowe. Skutek: nasz dochód kapitałowy może być nieco niższy/wyższy vs raport biura (rząd kilkudziesięciu PLN/rok dla typowej aktywności).
 - **Rounding:** każda pozycja PLN kwantowana do 1 grosza (`ROUND_HALF_UP`) na poziomie zdarzenia. Tolerancja UPO cap: 0,1pp. Końcowe sumy w `pit_YYYY.txt` mogą różnić się od raportu biura o pojedyncze grosze.
 

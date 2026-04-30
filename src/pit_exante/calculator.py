@@ -28,7 +28,6 @@ from .models import (
 )
 from .nbp import get_rate, save_cache_if_dirty
 from .parser import is_instrument_trade, parse_transactions
-from .pit8c import load_pit8c
 from .symbol_metadata import classify as classify_kind
 
 logger = logging.getLogger(__name__)
@@ -546,16 +545,11 @@ def _match_tax_by_timestamp(
 
 def calculate(
     transactions_path: str | Path,
-    pit8c_config_dir: Path | None = None,
 ) -> tuple[list[YearReport], dict]:
     """Process all transactions and generate yearly tax reports.
 
     Returns (reports, open_positions) where open_positions is the FIFO state
     at the end of processing.
-
-    If ``pit8c_config_dir`` is provided, each report's ``pit8c`` field is
-    hydrated from ``{config_dir}/{year}.json`` (PIT-38 wariant 18, rok ≥ 2025).
-    Years without a matching config file keep ``pit8c = None``.
     """
     transactions = parse_transactions(transactions_path)
     commission_map = _build_commission_map(transactions)
@@ -900,27 +894,27 @@ def calculate(
                 f"(instrumenty pochodne). Po decyzji: dodaj override do code path."
             )
 
+    # CFD net presentation: broker's PIT-8C wiersz 3 (art. 30b ust. 2 pkt 3)
+    # reports derivatives net because the client never acquires the underlying;
+    # gross overstates both sides. Each closed cycle becomes income = max(0, P&L),
+    # cost = max(0, -P&L). Rollover events are already single-sided so this is
+    # a no-op for them.
+    for event in tax_events:
+        if event.kind != InstrumentKind.DERIVATIVE:
+            continue
+        pl = event.income_pln - event.cost_pln
+        if pl >= 0:
+            event.income_pln = pl
+            event.cost_pln = Decimal("0")
+        else:
+            event.income_pln = Decimal("0")
+            event.cost_pln = -pl
+
     # Aggregate by year
     reports = _aggregate_by_year(tax_events, dividend_events)
     positions = fifo.get_positions()
 
-    if pit8c_config_dir is not None:
-        _apply_pit8c_to_reports(reports, pit8c_config_dir)
-
     return reports, positions
-
-
-def _apply_pit8c_to_reports(reports: list[YearReport], config_dir: Path) -> None:
-    """Populate ``report.pit8c`` for each report whose year has a config file.
-
-    Cohesion: lives next to ``_aggregate_by_year`` because both produce
-    ``YearReport`` state. Loader (``pit8c.load_pit8c``) stays a pure data
-    accessor with no knowledge of report shape.
-    """
-    for report in reports:
-        info = load_pit8c(report.year, config_dir)
-        if info is not None:
-            report.pit8c = info
 
 
 def _aggregate_by_year(
