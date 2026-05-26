@@ -29,7 +29,15 @@ repos:
         name: Block any real Exante account ID pattern (GEC####) in tracked files
         entry: 'GEC[0-9]{4}'
         language: pygrep
-        exclude: '^(docs/internal/|tests/personal/|data/|output/|\.env$|\.pre-commit-config\.yaml)'
+        exclude: '^(docs/internal/|docs/legal/|tests/personal/|data/|output/|\.env$|\.pre-commit-config\.yaml|ISA\.md$)'
+
+      - id: no-broker-uuid
+        name: Block UUID v4 patterns (likely Exante transaction UUIDs) in tracked docs and code
+        entry: '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+        language: pygrep
+        # Exclude: gitignored personal dirs + test fixtures (synthetic UUIDs OK) +
+        # config files (gitleaks may have UUID patterns) + setuptools lock.
+        exclude: '^(docs/internal/|docs/legal/|tests/personal/|tests/test_|data/|output/|\.env$|\.pre-commit-config\.yaml|ISA\.md$|uv\.lock$)'
 
       - id: no-personal-amounts
         name: Block amounts listed in .personal-amounts (if present)

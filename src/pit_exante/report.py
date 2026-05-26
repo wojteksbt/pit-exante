@@ -33,8 +33,7 @@ def _render_event_table(events: list[TaxEvent]) -> list[str]:
     lines: list[str] = []
     lines.append("─" * 100)
     lines.append(
-        f"{'Data':<12}{'Typ':<18}{'Instrument':<16}"
-        f"{'Przychód PLN':>14}{'Koszt PLN':>14}{'Zysk/Strata':>14}"
+        f"{'Data':<12}{'Typ':<18}{'Instrument':<16}{'Przychód PLN':>14}{'Koszt PLN':>14}{'Zysk/Strata':>14}"
     )
     lines.append("─" * 100)
     for e in sorted(events, key=lambda x: x.date):
@@ -594,7 +593,7 @@ def _render_pitzg_attachments(report: YearReport) -> list[str]:
         pos_c = _pit38_section_c_positions(report.year)
         if report.year >= _PIT38_W18_FIRST_YEAR:
             fees_pos = pos_c["wiersz_1_cost"]
-            fees_note = f"wliczone we wstępnie wypełnioną poz. {fees_pos} PIT-38 " "(PIT-8C brokera, poz. 36)"
+            fees_note = f"wliczone we wstępnie wypełnioną poz. {fees_pos} PIT-38 (PIT-8C brokera, poz. 36)"
         else:
             fees_pos = pos_c["wiersz_2_cost"]
             fees_note = f"wliczone w łączną poz. {fees_pos} PIT-38"
@@ -604,6 +603,61 @@ def _render_pitzg_attachments(report: YearReport) -> list[str]:
         lines.append(f"  Stąd Σ poz. 29 PIT/ZG < |poz. {strata_pos} PIT-38| o tę kwotę.")
         lines.append("")
 
+    return lines
+
+
+def _render_pit36_inne_zrodla(report: YearReport) -> list[str]:
+    """Sekcja PIT-36 inne źródła (art. 20 ust. 1) — zwroty broker.
+
+    Lock ADR-0009 (2026-05-26): REIMBURSEMENT i pokrewne → tutaj, NIE do PIT-38.
+    Numeracja pozycji zmienia się rocznie — instrukcja używa opisowych nazw
+    wierszy zamiast numerów, żeby raport nie zardzewiał przy nowych wariantach.
+    """
+    lines: list[str] = []
+    if not report.pit36_inne_zrodla_events:
+        return lines
+
+    total = report.pit36_inne_zrodla_income_pln
+    lines.append("═" * 70)
+    lines.append(f" Inne źródła (art. 20 ust. 1) — Rok {report.year}")
+    lines.append(" → PIT-36 sekcja D wiersz 'Inne źródła'")
+    lines.append("═" * 70)
+    lines.append("")
+    lines.append(f"PRZYCHÓD:                                      {_fmt(total)} PLN")
+    lines.append(
+        "KOSZTY UZYSKANIA PRZYCHODU:                     0,00 PLN  (brak kosztów po stronie podatnika)"
+    )
+    lines.append(f"DOCHÓD:                                        {_fmt(total)} PLN")
+    lines.append("")
+    lines.extend(_render_event_table(report.pit36_inne_zrodla_events))
+    lines.append(f"{'RAZEM':<12}{'':<18}{'':<16}{_fmt(total, 14)}{_fmt(Decimal('0'), 14)}{_fmt(total, 14)}")
+    lines.append("")
+    lines.append("▌ INSTRUKCJA WYPEŁNIENIA PIT-36")
+    lines.append(f"    Złóż PIT-36 za rok {report.year} (wariant aktualny w roku {report.year + 1}).")
+    lines.append("    Sekcja D, wiersz 'Inne źródła, w tym emerytury — renty z zagranicy':")
+    lines.append(f"      • Przychód:           {_fmt(total)} PLN")
+    lines.append("      • Koszty uzyskania:   0,00 PLN")
+    lines.append(f"      • Dochód:             {_fmt(total)} PLN")
+    lines.append("    Numer wiersza i pozycje (poz. XX/YY) sprawdź w aktualnym wariancie")
+    lines.append(f"    formularza PIT-36 za rok {report.year} na podatki.gov.pl — numeracja")
+    lines.append("    zmienia się między wariantami; ten kalkulator celowo nie wpisuje numerów,")
+    lines.append("    żeby instrukcja nie wprowadzała w błąd po wydaniu nowego wariantu.")
+    lines.append("")
+    lines.append("▌ KWOTA WOLNA OD PODATKU (skala)")
+    lines.append("    Kwota wolna od podatku (skala podatkowa) wynosi 30 000 PLN łącznie")
+    lines.append("    dla wszystkich dochodów rozliczanych w PIT-36/PIT-37 (skala). Liniowy")
+    lines.append("    PIT-36L i ryczałtowy PIT-28 NIE konsumują tej kwoty.")
+    lines.append(f"    Jeśli {_fmt(total).strip()} PLN to Twoje jedyne dochody na skali →")
+    lines.append("    podatek od inne źródła = 0 PLN (pełne pokrycie kwotą wolną).")
+    lines.append("    Jeśli masz inne dochody na skali (PIT-11 z umowy, najem prywatny,")
+    lines.append("    inne źródła z innych płatników) — sumują się i wpływają na próg.")
+    lines.append("")
+    lines.append("▌ PODSTAWA PRAWNA + AUDIT TRAIL")
+    lines.append("    Kwalifikacja jako art. 20 ust. 1 (inne źródła, katalog otwarty):")
+    lines.append("    docs/legal/reimbursement-art20.md — uzasadnienie wyboru, cytaty linii")
+    lines.append("    interpretacyjnej KIS, odrzucenie alternatyw (korekta PIT-38 / art. 21 pkt 3a /")
+    lines.append("    neutralność). docs/adr/0009-reimbursement-other-sources.md — ADR architektoniczne.")
+    lines.append("")
     return lines
 
 
@@ -692,6 +746,11 @@ def generate_year_report(
     lines.append(f"DOCHÓD / STRATA:                               {_fmt(report.pit38_profit_loss)} PLN")
     lines.append(f"PODATEK (19% od dochodu):                      {_fmt(report.pit38_tax)} PLN")
     lines.append("")
+
+    # ───────────────────────────────────────────────────────────────
+    # SEKCJA 2b: Inne źródła (PIT-36 art. 20) — zwroty broker (REIMBURSEMENT)
+    # ───────────────────────────────────────────────────────────────
+    lines.extend(_render_pit36_inne_zrodla(report))
 
     # ───────────────────────────────────────────────────────────────
     # SEKCJA 3: Dywidendy zagraniczne → PIT-38 sekcja G + PIT/ZG
@@ -857,6 +916,25 @@ def generate_csv(
 
     for report in reports:
         for e in sorted(report.pit38_events, key=lambda x: x.date):
+            profit = e.income_pln - e.cost_pln
+            writer.writerow(
+                [
+                    report.year,
+                    e.date.isoformat(),
+                    e.event_type,
+                    e.symbol,
+                    e.account_id,
+                    f"{e.income_original:.2f}",
+                    f"{e.cost_original:.2f}",
+                    e.currency,
+                    f"{e.nbp_rate:.4f}",
+                    f"{e.income_pln:.2f}",
+                    f"{e.cost_pln:.2f}",
+                    f"{profit:.2f}",
+                ]
+            )
+
+        for e in sorted(report.pit36_inne_zrodla_events, key=lambda x: x.date):
             profit = e.income_pln - e.cost_pln
             writer.writerow(
                 [

@@ -941,16 +941,20 @@ class TestCsvOutput:
         ]
         assert header == expected, f"CSV header mismatch: {header}"
 
-    def test_row_count_equals_sum_of_pit38_and_dividend_events(self, csv_text):
+    def test_row_count_equals_sum_of_pit38_and_dividend_and_pit36_events(self, csv_text):
         text, reports = csv_text
         reader = csv.reader(io.StringIO(text))
         next(reader)  # skip header
         rows = list(reader)
-        expected_count = sum(len(r.pit38_events) + len(r.dividend_events) for r in reports)
+        expected_count = sum(
+            len(r.pit38_events) + len(r.dividend_events) + len(r.pit36_inne_zrodla_events) for r in reports
+        )
         assert len(rows) == expected_count, f"CSV row count {len(rows)} != events {expected_count}"
 
     def test_pit38_income_sum_per_year_matches_year_report(self, csv_text):
-        # Filter rows by Typ != "dividend", sum Przychód PLN per Rok, compare to r.pit38_income.
+        # Filter rows by Typ ∉ {"dividend", "reimbursement"}, sum Przychód PLN per Rok,
+        # compare to r.pit38_income. "reimbursement" trafia do PIT-36 (ADR-0009),
+        # nie do PIT-38, więc musi być wykluczony z tego sumowania.
         text, reports = csv_text
         reader = csv.reader(io.StringIO(text))
         next(reader)
@@ -958,7 +962,7 @@ class TestCsvOutput:
         for row in reader:
             year = int(row[0])
             typ = row[2]
-            if typ == "dividend":
+            if typ in ("dividend", "reimbursement"):
                 continue
             sums[year] = sums.get(year, Decimal("0")) + Decimal(row[9])
         for r in reports:
@@ -967,6 +971,26 @@ class TestCsvOutput:
             assert (
                 actual == expected
             ), f"Year {r.year}: CSV pit38 income sum {actual} != r.pit38_income {expected}"
+
+    def test_pit36_income_sum_per_year_matches_year_report(self, csv_text):
+        # Komplementarny test do test_pit38_income_sum_per_year_matches_year_report:
+        # Σ "reimbursement" w CSV == r.pit36_inne_zrodla_income_pln per rok.
+        text, reports = csv_text
+        reader = csv.reader(io.StringIO(text))
+        next(reader)
+        sums: dict[int, Decimal] = {}
+        for row in reader:
+            year = int(row[0])
+            typ = row[2]
+            if typ != "reimbursement":
+                continue
+            sums[year] = sums.get(year, Decimal("0")) + Decimal(row[9])
+        for r in reports:
+            expected = r.pit36_inne_zrodla_income_pln
+            actual = sums.get(r.year, Decimal("0"))
+            assert (
+                actual == expected
+            ), f"Year {r.year}: CSV pit36 income sum {actual} != r.pit36_inne_zrodla_income_pln {expected}"
 
     def test_dividend_typ_marker_present(self, csv_text):
         text, reports = csv_text

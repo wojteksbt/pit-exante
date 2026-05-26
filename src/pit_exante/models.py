@@ -30,19 +30,23 @@ class TaxCategory(Enum):
     ROLLOVER_COST = "rollover_cost"
     ROLLOVER_INCOME = "rollover_income"
     FEE = "fee"
+    REIMBURSEMENT = "reimbursement"
     SKIP = "skip"
 
 
 class InstrumentKind(Enum):
-    """Tax classification per art. 30b ustawy o PIT.
+    """Tax classification driver.
 
-    Maps to PIT-8C positions and PIT-38 rows:
-    - SECURITY: PIT-8C poz. 23-24, PIT-38 wiersz 1 (akcje, ETF, obligacje, fundusze)
-    - DERIVATIVE: PIT-8C poz. 27-28, PIT-38 wiersz 3 (CFD, futures, opcje)
+    - SECURITY: art. 30b ust. 1 → PIT-8C poz. 35/36, PIT-38 sekcja C wiersz 1 (akcje, ETF, obligacje, fundusze)
+    - DERIVATIVE: art. 30b ust. 1 → PIT-8C poz. 37/38, PIT-38 sekcja C wiersz 1 razem (CFD, futures, opcje)
+    - OTHER_SOURCES: art. 20 ust. 1 → PIT-36 sekcja D wiersz "Inne źródła" (zwroty broker, świadczenia peryferyjne).
+      ADR-0009 — Lock decyzji 2026-05-26: REIMBURSEMENT (i ekonomicznie podobne, jeśli zostaną świadomie dopisane)
+      idą tutaj, nie do PIT-38 art. 17. Konsystencja niezależna od kwoty.
     """
 
     SECURITY = "security"
     DERIVATIVE = "derivative"
+    OTHER_SOURCES = "other_sources"
 
 
 class UnknownInstrumentError(KeyError):
@@ -174,6 +178,10 @@ class YearReport:
     pochodne_income: Decimal = Decimal("0")
     pochodne_cost: Decimal = Decimal("0")
     pochodne_events: list[TaxEvent] = field(default_factory=list)
+    # PIT-36 sekcja D wiersz "Inne źródła" (art. 20 ust. 1) — zwroty broker / świadczenia peryferyjne
+    # Konsystentna reguła locked 2026-05-26 (ADR-0009): REIMBURSEMENT i pokrewne lądują tu, nie w PIT-38.
+    pit36_inne_zrodla_income_pln: Decimal = Decimal("0")
+    pit36_inne_zrodla_events: list[TaxEvent] = field(default_factory=list)
     # PIT-38 sekcja G + PIT/ZG — dywidendy zagraniczne
     dividends_income_pln: Decimal = Decimal("0")  # poz. 45 input — dywidendy brutto
     dividends_tax_paid_pln: Decimal = Decimal("0")  # WHT zapłacony za granicą (informacyjnie)

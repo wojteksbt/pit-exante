@@ -119,7 +119,9 @@ def parse_transactions(path: str | Path) -> list[Transaction]:
             symbol_id=symbol_id,
             operation_type=r["operationType"],
             sum=Decimal(str(r["sum"])),
-            transaction_price=Decimal(str(r["transactionPrice"])) if r.get("transactionPrice") is not None else None,
+            transaction_price=Decimal(str(r["transactionPrice"]))
+            if r.get("transactionPrice") is not None
+            else None,
             asset=asset,
             currency=currency,
             order_id=r.get("orderId"),

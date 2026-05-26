@@ -113,6 +113,7 @@ src/pit_exante/
 | CORPORATE ACTION | Reverse split + fractional cash payment | FIFO + sprzedaż ułamka |
 | ROLLOVER | Swap overnight (CFD) | koszt lub przychód (instrumenty pochodne) |
 | SPECIAL FEE / EXCESS MARGIN FEE | Koszt uzyskania przychodu | PIT-38 |
+| REIMBURSEMENT | Zwrot broker za błędne wykonanie zlecenia | **PIT-36 inne źródła (art. 20 ust. 1)** — ADR-0009 |
 | AUTOCONVERSION | Pomijane (art. 24c nie dotyczy os. fizycznych) | — |
 | FUNDING / WITHDRAWAL | Pomijane | — |
 | SUBACCOUNT TRANSFER | Pomijane (transfer wewnętrzny) | — |
@@ -136,6 +137,7 @@ FIFO działa osobno per `(rachunek, instrument)` z normalizacją subkont do kont
 ### Niezaimplementowane scenariusze (fail-fast jeśli wystąpią)
 
 - **Cross-year dividend refund** — zwrot podatku u źródła w innym roku niż wypłata dywidendy. Fail-fast `H2`. Wymaga decyzji A/B (przypisać do roku wypłaty czy roku otrzymania zwrotu) — odłożone do pierwszego rzeczywistego przypadku w danych.
+- **REIMBURSEMENT-podobne operationType** (`ADJUSTMENT`, `CORRECTION`, `REBATE`, `COMPENSATION`) — obecnie cicho SKIP. Reguła ADR-0009 (REIMBURSEMENT → PIT-36 inne źródła) NIE rozciąga się automatycznie. Gdy pojawi się real-data event z innym typem, należy ocenić ekonomiczną zbieżność i albo dodać do `classifier.py` jako alias REIMBURSEMENT, albo wprowadzić odrębną regułę. Aktualna scope w `docs/legal/reimbursement-art20.md` § *Known gaps*.
 - **CFD wypłacający dywidendę** — fail-fast w KROK 3 (manualna decyzja czy traktować jako derywat-z-przychodem-okresowym czy SECURITY).
 - **Reverse split z konsekwencją FIFO** — obecna implementacja waży lots ilością (quantity); poprawne traktowanie wymagałoby ważenia kosztem PLN. REMX 2020 to jedyny case w danych, gdzie różnica jest pomijalna.
 

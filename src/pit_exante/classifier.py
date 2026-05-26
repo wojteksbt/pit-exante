@@ -24,5 +24,7 @@ def classify(t: Transaction) -> TaxCategory:
             return TaxCategory.ROLLOVER_COST if t.sum < 0 else TaxCategory.ROLLOVER_INCOME
         case "SPECIAL FEE" | "EXCESS MARGIN FEE":
             return TaxCategory.FEE
+        case "REIMBURSEMENT":
+            return TaxCategory.REIMBURSEMENT
         case _:
             return TaxCategory.SKIP

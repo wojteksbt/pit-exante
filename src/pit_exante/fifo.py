@@ -85,7 +85,9 @@ class FifoEngine:
             lot = queue[0]
             qty_used = min(lot.quantity, remaining)
             # Round each component to grosze separately (Exante convention)
-            cost_pln += to_pln(qty_used * lot.price_per_unit, lot.nbp_rate) + to_pln(qty_used * lot.commission_per_unit, lot.nbp_rate)
+            cost_pln += to_pln(qty_used * lot.price_per_unit, lot.nbp_rate) + to_pln(
+                qty_used * lot.commission_per_unit, lot.nbp_rate
+            )
             cost_original += qty_used * (lot.price_per_unit + lot.commission_per_unit)
             consumed_lots.append(f"{lot.date}:{qty_used}@{lot.price_per_unit}")
             if lot.quantity <= remaining:
@@ -256,7 +258,9 @@ class FifoEngine:
         while consumed < old_quantity and queue:
             lot = queue.popleft()
             old_lots.append(lot)
-            total_cost_pln += to_pln(lot.quantity * lot.price_per_unit, lot.nbp_rate) + to_pln(lot.quantity * lot.commission_per_unit, lot.nbp_rate)
+            total_cost_pln += to_pln(lot.quantity * lot.price_per_unit, lot.nbp_rate) + to_pln(
+                lot.quantity * lot.commission_per_unit, lot.nbp_rate
+            )
             total_cost_original += lot.quantity * (lot.price_per_unit + lot.commission_per_unit)
             consumed += lot.quantity
 
@@ -264,9 +268,9 @@ class FifoEngine:
 
         # Average NBP rate from old lots
         if old_lots:
-            weighted_rate = sum(
-                lot.quantity * lot.nbp_rate for lot in old_lots
-            ) / sum(lot.quantity for lot in old_lots)
+            weighted_rate = sum(lot.quantity * lot.nbp_rate for lot in old_lots) / sum(
+                lot.quantity for lot in old_lots
+            )
         else:
             weighted_rate = nbp_rate
 
@@ -290,19 +294,21 @@ class FifoEngine:
         if fractional_cash and fractional_cash > 0:
             fractional_income_pln = to_pln(fractional_cash, nbp_rate)
 
-            events.append(TaxEvent(
-                date=reverse_date,
-                symbol=symbol,
-                account_id=account_id,
-                event_type="fractional_cash",
-                income_original=fractional_cash,
-                cost_original=Decimal("0"),
-                income_pln=fractional_income_pln,
-                cost_pln=Decimal("0"),
-                currency=currency,
-                nbp_rate=nbp_rate,
-                details=f"Reverse split {symbol} fractional share payment: {fractional_cash} {currency}",
-            ))
+            events.append(
+                TaxEvent(
+                    date=reverse_date,
+                    symbol=symbol,
+                    account_id=account_id,
+                    event_type="fractional_cash",
+                    income_original=fractional_cash,
+                    cost_original=Decimal("0"),
+                    income_pln=fractional_income_pln,
+                    cost_pln=Decimal("0"),
+                    currency=currency,
+                    nbp_rate=nbp_rate,
+                    details=f"Reverse split {symbol} fractional share payment: {fractional_cash} {currency}",
+                )
+            )
 
         return events
 

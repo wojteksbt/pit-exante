@@ -78,6 +78,8 @@ def _classify_event_kind(
         return InstrumentKind.DERIVATIVE
     if event.event_type == "fee":
         return InstrumentKind.SECURITY
+    if event.event_type == "reimbursement":
+        return InstrumentKind.OTHER_SOURCES
     return classify_kind(event.symbol, symbols, overrides)
 
 
@@ -832,6 +834,36 @@ def calculate(
                 )
                 tax_events.append(event)
 
+            case TaxCategory.REIMBURSEMENT:
+                # ADR-0009: zwrot broker (np. Exante REIMBURSEMENT za błędne wykonanie zlecenia)
+                # → PIT-36 inne źródła art. 20 ust. 1, cash-basis (dzień otrzymania).
+                # Konsystentna reguła niezależna od kwoty. Lock 2026-05-26.
+                tx_date = _effective_date(t)
+                if t.currency not in BARE_CURRENCIES:
+                    raise ValueError(
+                        f"REIMBURSEMENT in unsupported currency {t.currency!r} "
+                        f"(uuid={t.uuid}, date={tx_date.isoformat()}). "
+                        f"Add to BARE_CURRENCIES + NBP _VALID_NBP_CURRENCIES "
+                        f"or skip via override."
+                    )
+                nbp_rate = get_rate(t.currency, tx_date)
+                amount_orig = abs(t.sum)
+                amount_pln = to_pln(amount_orig, nbp_rate)
+                event = TaxEvent(
+                    date=tx_date,
+                    symbol=t.symbol_id or "REIMBURSEMENT",
+                    account_id=t.account_id,
+                    event_type="reimbursement",
+                    income_original=amount_orig,
+                    cost_original=Decimal("0"),
+                    income_pln=amount_pln,
+                    cost_pln=Decimal("0"),
+                    currency=t.currency,
+                    nbp_rate=nbp_rate,
+                    details=f"Zwrot broker (PIT-36 inne źródła): {t.sum} {t.currency} — uuid={t.uuid}",
+                )
+                tax_events.append(event)
+
             case TaxCategory.SKIP:
                 pass
 
@@ -934,13 +966,23 @@ def _aggregate_by_year(
     for year in all_years:
         report = YearReport(year=year)
 
-        # PIT-38 events — sorted chronologically (deterministic order)
+        # Tax events for the year — sorted chronologically (deterministic order)
         year_tax_events = sorted(tax_by_year.get(year, []), key=lambda e: e.date)
-        report.pit38_events = year_tax_events
 
-        # KROK 3: split events by InstrumentKind for PIT-38 wiersz 1 vs wiersz 3
+        # Split events by InstrumentKind:
+        # - SECURITY/DERIVATIVE → PIT-38 (art. 30b ust. 1)
+        # - OTHER_SOURCES → PIT-36 inne źródła (art. 20 ust. 1), ADR-0009
         report.papiery_wart_events = [e for e in year_tax_events if e.kind == InstrumentKind.SECURITY]
         report.pochodne_events = [e for e in year_tax_events if e.kind == InstrumentKind.DERIVATIVE]
+        report.pit36_inne_zrodla_events = [
+            e for e in year_tax_events if e.kind == InstrumentKind.OTHER_SOURCES
+        ]
+        report.pit36_inne_zrodla_income_pln = sum(
+            (e.income_pln for e in report.pit36_inne_zrodla_events), Decimal("0")
+        )
+        # pit38_events: only events routed to PIT-38 (exclude OTHER_SOURCES).
+        # Used by report.py + CSV — keep semantically clean.
+        report.pit38_events = report.papiery_wart_events + report.pochodne_events
 
         report.papiery_wart_income = sum((e.income_pln for e in report.papiery_wart_events), Decimal("0"))
         report.papiery_wart_cost = sum((e.cost_pln for e in report.papiery_wart_events), Decimal("0"))

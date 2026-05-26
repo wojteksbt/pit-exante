@@ -98,8 +98,7 @@ def _fetch_from_api(currency: str, d: date) -> Decimal | None:
             continue
 
     raise RuntimeError(
-        f"NBP API failed after {len(_RETRY_DELAYS_S) + 1} attempts "
-        f"for {currency} {d.isoformat()}: {last_err}"
+        f"NBP API failed after {len(_RETRY_DELAYS_S) + 1} attempts for {currency} {d.isoformat()}: {last_err}"
     )
 
 
@@ -118,7 +117,7 @@ def get_rate(currency: str, transaction_date: date) -> Decimal:
         return Decimal("1")
     if cur not in _VALID_NBP_CURRENCIES:
         raise ValueError(
-            f"Unsupported currency {currency!r}; " f"expected one of {sorted(_VALID_NBP_CURRENCIES)} or PLN"
+            f"Unsupported currency {currency!r}; expected one of {sorted(_VALID_NBP_CURRENCIES)} or PLN"
         )
 
     _load_cache()
@@ -154,7 +153,7 @@ def get_rate(currency: str, transaction_date: date) -> Decimal:
         d -= timedelta(days=1)
 
     raise RuntimeError(
-        f"No NBP rate within {_MAX_FALLBACK_DAYS} days back from " f"{transaction_date} for {currency}"
+        f"No NBP rate within {_MAX_FALLBACK_DAYS} days back from {transaction_date} for {currency}"
     )
 
 

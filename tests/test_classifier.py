@@ -68,6 +68,9 @@ class TestClassifyOperationTypes:
     def test_excess_margin_fee(self):
         assert classify(_make_txn("EXCESS MARGIN FEE")) == TaxCategory.FEE
 
+    def test_reimbursement(self):
+        assert classify(_make_txn("REIMBURSEMENT")) == TaxCategory.REIMBURSEMENT
+
     def test_autoconversion_skip(self):
         assert classify(_make_txn("AUTOCONVERSION")) == TaxCategory.SKIP
 

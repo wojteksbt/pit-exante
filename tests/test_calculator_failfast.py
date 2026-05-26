@@ -102,7 +102,7 @@ class TestH4OverRefund:
                 operationType="US TAX",
                 sum="20.0",
                 asset="USD",
-                comment="2 shares ExD 2024-01-15 PD 2024-01-15 dividend " "AAPL.NASDAQ 100.00 USD",
+                comment="2 shares ExD 2024-01-15 PD 2024-01-15 dividend AAPL.NASDAQ 100.00 USD",
             ),
         ]
         path = _write_run(tmp_path, txns, symbol_overrides={"AAPL.NASDAQ": "STOCK"})
@@ -167,7 +167,7 @@ class TestH2RefundCrossYear:
                 operationType="US TAX",
                 sum="5.0",
                 asset="USD",
-                comment="2 shares ExD 2024-01-15 PD 2024-01-15 dividend " "AAPL.NASDAQ 100.00 USD",
+                comment="2 shares ExD 2024-01-15 PD 2024-01-15 dividend AAPL.NASDAQ 100.00 USD",
             ),
         ]
         path = _write_run(tmp_path, txns, symbol_overrides={"AAPL.NASDAQ": "STOCK"})
