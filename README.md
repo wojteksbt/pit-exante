@@ -92,7 +92,7 @@ src/pit_exante/
 ├── models.py          # Dataclasses: Transaction, FifoLot, TaxEvent, YearReport
 ├── parser.py          # JSON → Transaction (+derivacja waluty z exchange suffix)
 ├── classifier.py      # operationType → TaxCategory
-├── nbp.py             # API NBP + cache + obsługa świąt polskich
+├── nbp.py             # API NBP + cache
 ├── symbol_metadata.py # STOCK vs CFD per symbolType (+ manual overrides)
 ├── country.py         # derivacja kraju dywidendy z exchange + waluty
 ├── fifo.py            # Silnik FIFO z obsługą splitów i corporate actions

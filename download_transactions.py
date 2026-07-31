@@ -109,7 +109,6 @@ def main():
 
     print(f"\nTotal: {len(all_txns)} transactions saved to {out_path}")
 
-    # Summary by operation type
     types = {}
     for t in all_txns:
         op = t["operationType"]
@@ -118,7 +117,6 @@ def main():
     for op, count in sorted(types.items(), key=lambda x: -x[1]):
         print(f"  {op}: {count}")
 
-    # Date range
     if all_txns:
         first = datetime.fromtimestamp(all_txns[0]["timestamp"] / 1000)
         last = datetime.fromtimestamp(all_txns[-1]["timestamp"] / 1000)

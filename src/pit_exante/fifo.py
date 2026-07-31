@@ -103,12 +103,10 @@ class FifoEngine:
                 f"on {account_id} but only had {abs(quantity) - remaining} in queue"
             )
 
-        # Sell income
         sell_qty = abs(quantity)
         income_original = sell_qty * sell_price
         income_pln = to_pln(income_original, nbp_rate_sell)
 
-        # Add sell commission to cost
         cost_pln += to_pln(abs(sell_commission), nbp_rate_sell)
         cost_original += abs(sell_commission)
 
@@ -249,7 +247,6 @@ class FifoEngine:
         key = self._key(account_id, symbol)
         queue = self._queues[key]
 
-        # Pop all existing lots and compute total cost basis
         total_cost_pln = Decimal("0")
         total_cost_original = Decimal("0")
         old_lots: list[FifoLot] = []

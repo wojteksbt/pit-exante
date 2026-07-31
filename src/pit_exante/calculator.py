@@ -142,7 +142,6 @@ def _build_settlement_value_map(transactions: list[Transaction]) -> dict[str, De
     Only populated for single-fill orders. Multi-fill orders (partial executions)
     share cash legs across fills, making per-fill attribution impossible.
     """
-    # Count instrument fills per order
     fills_per_order: dict[str, int] = defaultdict(int)
     for t in transactions:
         if (
@@ -153,7 +152,6 @@ def _build_settlement_value_map(transactions: list[Transaction]) -> dict[str, De
         ):
             fills_per_order[t.order_id] += 1
 
-    # Only build settlement map for single-fill orders
     values: dict[str, Decimal] = {}
     for t in transactions:
         if (
@@ -942,7 +940,6 @@ def calculate(
             event.income_pln = Decimal("0")
             event.cost_pln = -pl
 
-    # Aggregate by year
     reports = _aggregate_by_year(tax_events, dividend_events)
     positions = fifo.get_positions()
 

@@ -66,7 +66,6 @@ def main(argv: list[str] | None = None) -> None:
     for p in written:
         print(f"  {p}")
 
-    # Summary of open positions
     if positions:
         print(f"\nOpen positions ({len(positions)} instruments):")
         for (account_id, symbol), lots in sorted(positions.items()):

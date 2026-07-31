@@ -986,17 +986,13 @@ def write_reports(
     written: list[Path] = []
 
     for report in reports:
-        # Year report
         text = generate_year_report(report, all_reports=reports)
-
-        # Add positions for years that have them
         text += generate_positions_report(positions, report.year)
 
         path = output_dir / f"pit_{report.year}.txt"
         path.write_text(text, encoding="utf-8")
         written.append(path)
 
-    # CSV
     csv_path = output_dir / "pit_all.csv"
     generate_csv(reports, csv_path)
     written.append(csv_path)
