@@ -300,6 +300,17 @@ def _render_section_c_w18_compare(
     lines.append(f"        wypełnione poz. {w1} ≈ wartości powyżej. Jeśli daleko (>~1%)")
     lines.append("        — możliwy rozjazd klasyfikatora STOCK/CFD lub broker pominął")
     lines.append("        transakcje.")
+    fee_costs = _fee_costs(report)
+    if fee_costs > 0:
+        cost_pos = pos_c["wiersz_1_cost"]
+        lines.append("")
+        lines.append("      Z czego składa się rozjazd kosztów wobec pre-fillu:")
+        lines.append(f"        · opłaty depozytowe brokera: {_fmt(fee_costs)} PLN. Kalkulator")
+        lines.append("          wlicza je w koszt, broker NIE uznaje ich za koszt — nie ma ich")
+        lines.append(f"          we wstępnie wypełnionej poz. {cost_pos}. Rozjazd mniej więcej tej")
+        lines.append("          wysokości jest OCZEKIWANY i nie jest sygnałem błędu.")
+        lines.append("        · dopiero nadwyżka ponad tę kwotę jest podejrzana (kurs NBP,")
+        lines.append("          atrybucja prowizji, klasyfikator STOCK/CFD).")
     lines.append("")
     lines.append(f"    Wiersz 2 'Inne przychody' (poz. {pos_c['wiersz_2_inc']}-{pos_c['wiersz_2_cost']}):")
     lines.append("")
@@ -591,16 +602,47 @@ def _render_pitzg_attachments(report: YearReport) -> list[str]:
     fee_costs = _fee_costs(report)
     if fee_costs > 0:
         pos_c = _pit38_section_c_positions(report.year)
+        strata_pos = pos_c["razem_strata"]
         if report.year >= _PIT38_W18_FIRST_YEAR:
             fees_pos = pos_c["wiersz_1_cost"]
-            fees_note = f"wliczone we wstępnie wypełnioną poz. {fees_pos} PIT-38 (PIT-8C brokera, poz. 36)"
+            lines.append(f"ℹ Opłaty brokera ({_fmt(fee_costs)} PLN) NIE są wliczone we wstępnie")
+            lines.append(f"  wypełnioną poz. {fees_pos} PIT-38 — broker nie uznaje opłat depozytowych")
+            lines.append("  za koszt, więc jego PIT-8C (poz. 36) ich nie zawiera. Wlicza je dopiero")
+            lines.append("  kalkulator i to jest główny składnik rozjazdu jego kosztów wobec pre-fillu.")
+            lines.append("  Nie są też atrybuowane do kraju w kalkulatorze (broker = Cypr formalnie).")
         else:
             fees_pos = pos_c["wiersz_2_cost"]
-            fees_note = f"wliczone w łączną poz. {fees_pos} PIT-38"
-        strata_pos = pos_c["razem_strata"]
-        lines.append(f"ℹ Opłaty brokera ({_fmt(fee_costs)} PLN) {fees_note},")
-        lines.append("  ale NIE atrybuowane do kraju w kalkulatorze (broker = Cypr formalnie).")
-        lines.append(f"  Stąd Σ poz. 29 PIT/ZG < |poz. {strata_pos} PIT-38| o tę kwotę.")
+            lines.append(
+                f"ℹ Opłaty brokera ({_fmt(fee_costs)} PLN) wliczone w łączną poz. {fees_pos} PIT-38,"
+            )
+            lines.append("  ale NIE atrybuowane do kraju w kalkulatorze (broker = Cypr formalnie).")
+        sum_pitzg = sum(
+            (max(inc - cost, Decimal("0")) for inc, cost in breakdown.values()),
+            Decimal("0"),
+        )
+        razem_pl = (
+            report.papiery_wart_income
+            - report.papiery_wart_cost
+            + report.pochodne_income
+            - report.pochodne_cost
+        )
+        zeroed = sorted(c for c, (inc, cost) in breakdown.items() if inc - cost < 0)
+        # Guard is the equality itself, not "profit year": a country zeroed by its own
+        # loss, or income the per-kraj breakdown cannot attribute, also breaks it.
+        if razem_pl > 0 and not zeroed and sum_pitzg - razem_pl == fee_costs:
+            lines.append(f"  Stąd Σ poz. 29 PIT/ZG ({_fmt(sum_pitzg)} PLN) przewyższa dochód")
+            lines.append(
+                f"  z poz. {pos_c['razem_dochod']} PIT-38 ({_fmt(razem_pl)} PLN) dokładnie o tę kwotę."
+            )
+        else:
+            lines.append(
+                f"  Dlatego Σ poz. 29 PIT/ZG nie uzgadnia się z poz. {pos_c['razem_dochod']}-{strata_pos} PIT-38."
+            )
+            if zeroed:
+                names = ", ".join(f"{_country_full_name(c)} ({c})" for c in zeroed)
+                lines.append("  Rozjazd jest tu dodatkowo powiększony o kraje wykazane wyżej jako 0,00")
+                lines.append("  — rok zamknięty stratą, a straty zagranicznej nie wykazujemy:")
+                lines.append(f"  {names}")
         lines.append("")
 
     return lines

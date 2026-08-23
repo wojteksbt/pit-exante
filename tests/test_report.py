@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import sys
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
@@ -1150,3 +1151,267 @@ class TestLossCarryforwardNote:
         r23 = self._make_report(2023, Decimal("-100"))
         lines23 = _render_loss_carryforward_note(r23, [r23], Decimal("-100"))
         assert "poz. 28 PIT-38 (2024)" in "\n".join(lines23)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Broker fees vs the pre-filled PIT-38 poz. 21 (wariant 18)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _fee_note_block(text: str) -> str:
+    """The 'ℹ Opłaty brokera' note: its first line plus the indented continuation."""
+    lines = text.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("ℹ Opłaty brokera"))
+    block = [lines[start]]
+    for line in lines[start + 1 :]:
+        if not line.startswith("  "):
+            break
+        block.append(line)
+    return "\n".join(block)
+
+
+def _fee_note_amount(text: str) -> Decimal:
+    """The amount printed in the 'ℹ Opłaty brokera (X PLN)' header line."""
+    import re
+
+    header = _fee_note_block(text).splitlines()[0]
+    match = re.search(rf"\(({_PL_AMOUNT_RE}) PLN\)", header)
+    assert match, header
+    return _pl_to_decimal(match.group(1))
+
+
+def _drift_breakdown_block(text: str) -> str:
+    """The 'Z czego składa się rozjazd' bullet list from the wariant-18 compare section."""
+    lines = text.splitlines()
+    start = next((i for i, line in enumerate(lines) if "Z czego składa się rozjazd" in line), None)
+    assert start is not None, "drift breakdown missing from the wariant-18 compare section"
+    block = []
+    for line in lines[start:]:
+        if not line.strip():
+            break
+        block.append(line)
+    return "\n".join(block)
+
+
+class TestBrokerFeesAreNotInThePrefill:
+    """Broker does not treat custody fees as a cost, so they are absent from its
+    PIT-8C and therefore from the KAS-prefilled poz. 21. Measured 2026-08-24 on
+    the 2025 correction: calculator cost 76 142,93 − fees 170,19 = 75 972,74 vs
+    broker's 75 977,00 — the whole row-1 cost drift IS the fees.
+
+    The report used to claim the opposite ("wliczone we wstępnie wypełnioną
+    poz. 21"). These probes red on its return.
+    """
+
+    FEE = Decimal("12.34")
+
+    def _report(self, year: int) -> object:
+        from pit_exante.models import TaxEvent, YearReport
+
+        sell = TaxEvent(
+            date=date(year, 6, 1),
+            symbol="GDXJ.ARCA",
+            account_id="ACC001",
+            event_type="sell",
+            income_original=Decimal("250"),
+            cost_original=Decimal("120"),
+            income_pln=Decimal("1000.00"),
+            cost_pln=Decimal("487.66"),
+            currency="USD",
+            nbp_rate=Decimal("4.0"),
+            details="sell",
+        )
+        fee = TaxEvent(
+            date=date(year, 2, 7),
+            symbol="FEE",
+            account_id="ACC001",
+            event_type="fee",
+            income_original=Decimal("0"),
+            cost_original=Decimal("3.085"),
+            income_pln=Decimal("0"),
+            cost_pln=self.FEE,
+            currency="USD",
+            nbp_rate=Decimal("4.0"),
+            details="custody fee",
+        )
+        return YearReport(
+            year=year,
+            papiery_wart_income=Decimal("1000.00"),
+            papiery_wart_cost=Decimal("487.66") + self.FEE,
+            papiery_wart_events=[sell, fee],
+        )
+
+    def test_premise_w17_note_does_claim_inclusion(self):
+        """Premise: the affirmative 'fees are included in poz. NN' sentence is
+        renderable by this test world — otherwise the w18 denial below would be
+        vacuously true."""
+        note = _fee_note_block(generate_year_report(self._report(2024)))
+        assert "wliczone w łączną poz. 23 PIT-38" in note
+        assert "NIE są wliczone" not in note
+
+    def test_w18_note_denies_inclusion_in_the_prefilled_position(self):
+        note = _fee_note_block(generate_year_report(self._report(2025)))
+        assert "NIE są wliczone we wstępnie" in note
+        assert "poz. 21 PIT-38" in note
+        # The false claim, in the exact shape it had before 2026-08-24.
+        assert "wliczone we wstępnie wypełnioną poz. 21 PIT-38 (PIT-8C brokera, poz. 36)" not in note
+
+    def test_w18_note_gives_the_reason_and_names_the_broker_form(self):
+        note = _fee_note_block(generate_year_report(self._report(2025)))
+        assert "broker nie uznaje opłat depozytowych" in note
+        assert "PIT-8C (poz. 36) ich nie zawiera" in note
+
+    def test_w18_note_keeps_the_country_attribution_sentence(self):
+        note = _fee_note_block(generate_year_report(self._report(2025)))
+        assert "atrybuowane do kraju w kalkulatorze (broker = Cypr formalnie)" in note
+
+    def test_w18_compare_section_attributes_the_drift_to_the_fees(self):
+        block = _drift_breakdown_block(generate_year_report(self._report(2025)))
+        assert "opłaty depozytowe brokera" in block
+        assert _pl_fmt(self.FEE) in block
+        assert "OCZEKIWANY" in block
+
+    def test_w18_compare_section_is_silent_without_fees(self):
+        """No fees → no drift breakdown; the block is fee-driven, not boilerplate."""
+        report = self._report(2025)
+        report.papiery_wart_events = [e for e in report.papiery_wart_events if e.event_type != "fee"]
+        report.papiery_wart_cost = Decimal("487.66")
+        assert "Z czego składa się rozjazd" not in generate_year_report(report)
+
+    def test_drift_amount_tracks_the_fee_events_not_a_literal(self):
+        """Same code path, a different fee amount — the printed number follows."""
+        report = self._report(2025)
+        other = Decimal("99.99")
+        for e in report.papiery_wart_events:
+            if e.event_type == "fee":
+                e.cost_pln = other
+        report.papiery_wart_cost = Decimal("487.66") + other
+        text = generate_year_report(report)
+        assert _pl_fmt(other) in _drift_breakdown_block(text)
+        assert _pl_fmt(self.FEE) not in _drift_breakdown_block(text)
+        # Read the header amount rather than searching the whole note: the closing
+        # reconciliation lines print unrelated sums that can contain "12,34" as a
+        # substring of e.g. "512,34".
+        assert _fee_note_amount(text) == other
+
+
+class TestPitZgVsPit38Reconciliation:
+    """The closing line of the fee note used to claim, unconditionally, that
+    Σ poz. 29 PIT/ZG is SMALLER than |PIT-38| by exactly the fees. Measured
+    2026-08-24 on live years, it is wrong twice over:
+
+    · sign — in a profit year Σ PIT/ZG is LARGER (2023: 319,77 vs 156,05,
+      difference 163,72 = the fees exactly), because fees shrink PIT-38 and
+      belong to no country;
+    · existence — a country that closed the year at a loss enters PIT/ZG as
+      0,00, and that zeroing dwarfs the fees (2024: gap 1 414,99 vs fees
+      153,14; 2025: gap 5 954,30 vs fees 170,19).
+
+    So the exact relation may only be printed where it actually holds.
+    """
+
+    FEE = Decimal("12.34")
+
+    def _report(self, year: int, rows: list[tuple[str, str, str, str]]):
+        """rows: (symbol, currency, income_pln, cost_pln) — one sell each, plus one fee."""
+        from pit_exante.models import TaxEvent, YearReport
+
+        events = [
+            TaxEvent(
+                date=date(year, 6, 1),
+                symbol=symbol,
+                account_id="ACC001",
+                event_type="sell",
+                income_original=Decimal("1"),
+                cost_original=Decimal("1"),
+                income_pln=Decimal(income),
+                cost_pln=Decimal(cost),
+                currency=currency,
+                nbp_rate=Decimal("4.0"),
+                details="sell",
+            )
+            for symbol, currency, income, cost in rows
+        ]
+        events.append(
+            TaxEvent(
+                date=date(year, 2, 7),
+                symbol="FEE",
+                account_id="ACC001",
+                event_type="fee",
+                income_original=Decimal("0"),
+                cost_original=Decimal("3.085"),
+                income_pln=Decimal("0"),
+                cost_pln=self.FEE,
+                currency="USD",
+                nbp_rate=Decimal("4.0"),
+                details="custody fee",
+            )
+        )
+        return YearReport(
+            year=year,
+            papiery_wart_income=sum((e.income_pln for e in events), Decimal("0")),
+            papiery_wart_cost=sum((e.cost_pln for e in events), Decimal("0")),
+            papiery_wart_events=events,
+        )
+
+    # Every country profitable, year profitable → the exact relation holds.
+    PROFIT_NO_ZEROING = [
+        ("GDXJ.ARCA", "USD", "1000.00", "400.00"),
+        ("LUN.TMX", "CAD", "500.00", "200.00"),
+    ]
+    # US closed at a loss → enters PIT/ZG as 0,00; year overall a loss (like 2024/2025).
+    LOSS_WITH_ZEROED_COUNTRY = [
+        ("GDXJ.ARCA", "USD", "100.00", "900.00"),
+        ("LUN.TMX", "CAD", "500.00", "200.00"),
+    ]
+    # Year profitable but US still zeroed — isolates the zeroing from the year's sign.
+    PROFIT_WITH_ZEROED_COUNTRY = [
+        ("GDXJ.ARCA", "USD", "100.00", "200.00"),
+        ("LUN.TMX", "CAD", "900.00", "300.00"),
+    ]
+
+    _EXACT = "przewyższa dochód"
+
+    def test_profit_without_zeroing_states_the_exact_relation(self):
+        note = _fee_note_block(generate_year_report(self._report(2023, self.PROFIT_NO_ZEROING)))
+        assert self._EXACT in note
+        assert "nie uzgadnia się" not in note
+
+    def test_the_stated_exact_relation_is_arithmetically_true(self):
+        """Not just present — the two amounts it prints must differ by the fees."""
+        import re
+
+        note = _fee_note_block(generate_year_report(self._report(2023, self.PROFIT_NO_ZEROING)))
+        tail = note[note.index(self._EXACT) - 60 :]
+        amounts = [_pl_to_decimal(a) for a in re.findall(_PL_AMOUNT_RE, tail)]
+        assert len(amounts) == 2, amounts
+        sum_pitzg, dochod = amounts
+        assert sum_pitzg - dochod == self.FEE
+
+    def test_loss_with_zeroed_country_does_not_state_the_exact_relation(self):
+        note = _fee_note_block(generate_year_report(self._report(2024, self.LOSS_WITH_ZEROED_COUNTRY)))
+        assert self._EXACT not in note
+        assert "nie uzgadnia się" in note
+
+    def test_loss_with_zeroed_country_names_the_zeroing_as_the_bigger_cause(self):
+        note = _fee_note_block(generate_year_report(self._report(2025, self.LOSS_WITH_ZEROED_COUNTRY)))
+        assert "wykazane wyżej jako 0,00" in note
+        assert "STANY ZJEDNOCZONE AMERYKI (US)" in note
+        assert "KANADA" not in note
+
+    def test_profit_with_zeroed_country_does_not_state_the_exact_relation(self):
+        """Profitable year is not sufficient — one zeroed country already breaks it."""
+        note = _fee_note_block(generate_year_report(self._report(2023, self.PROFIT_WITH_ZEROED_COUNTRY)))
+        assert self._EXACT not in note
+        assert "wykazane wyżej jako 0,00" in note
+
+    def test_no_year_claims_pitzg_is_smaller_by_the_fees(self):
+        """The pre-2026-08-24 claim, in the exact shape it had, across all four shapes."""
+        for year, rows in (
+            (2023, self.PROFIT_NO_ZEROING),
+            (2024, self.LOSS_WITH_ZEROED_COUNTRY),
+            (2025, self.LOSS_WITH_ZEROED_COUNTRY),
+            (2025, self.PROFIT_WITH_ZEROED_COUNTRY),
+        ):
+            note = _fee_note_block(generate_year_report(self._report(year, rows)))
+            assert "PIT/ZG < |poz." not in note, (year, note)
