@@ -83,7 +83,7 @@ Zbiorczy CSV: `output/pit_all.csv`.
 pytest
 ```
 
-Pokrywa parser, klasyfikator, NBP API, silnik FIFO, generator raportów. Testy nie wymagają danych z `data/` — wszystkie to testy jednostkowe z mockami i fixturami.
+Pokrywa parser, klasyfikator, NBP API, silnik FIFO, generator raportów. Testy w `tests/` (poziom główny) to jednostkowe z mockami i fixturami; `tests/personal/` to regresja na prawdziwym `data/transactions.json` (gitignored) — bez pliku się pomijają, a po odświeżeniu pliku ich goldeny trzeba świadomie przeliczyć, bo pękają na każdej nowej transakcji.
 
 ## Architektura
 
@@ -125,7 +125,7 @@ FIFO działa osobno per `(rachunek, instrument)` z normalizacją subkont do kont
 ### Zakres geograficzny i walutowy
 
 - **Wspierane giełdy:** NYSE, NASDAQ, ARCA, BATS (USA), TMX (Kanada), SOMX (Szwecja). Inwestycja na innej giełdzie (XETRA, LSE, SWX, EURONEXT, ASX itd.) → fail-fast `UnknownCountryError` z prośbą o dodanie wpisu do `_EXCHANGE_COUNTRY` w `country.py` razem ze stawką UPO.
-- **Wspierane waluty:** USD, EUR, CAD, SEK (+ PLN). Inna waluta → fail-fast w `nbp.py`. Dodanie nowej wymaga rozszerzenia `BARE_CURRENCIES` i `_VALID_NBP_CURRENCIES`.
+- **Wspierane waluty:** lista `BARE_CURRENCIES` w `models.py` i `_VALID_NBP_CURRENCIES` w `nbp.py` — obie trzeba rozszerzyć razem; inna waluta → fail-fast w `nbp.py`.
 
 ### Metodologia podatkowa
 
