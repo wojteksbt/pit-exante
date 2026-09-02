@@ -83,7 +83,16 @@ Zbiorczy CSV: `output/pit_all.csv`.
 pytest
 ```
 
-Pokrywa parser, klasyfikator, NBP API, silnik FIFO, generator raportów. Testy w `tests/` (poziom główny) to jednostkowe z mockami i fixturami; `tests/personal/` to regresja na prawdziwym `data/transactions.json` (gitignored) — bez pliku się pomijają, a po odświeżeniu pliku ich goldeny trzeba świadomie przeliczyć, bo pękają na każdej nowej transakcji.
+Pokrywa parser, klasyfikator, NBP API, silnik FIFO, generator raportów. Testy w `tests/` (poziom główny) to jednostkowe z mockami i fixturami; `tests/personal/` (gitignored) to regresja na zamrożonej kopii prawdziwych danych w `tests/personal/fixtures/frozen/` (`transactions.json`, `symbols.json`, `nbp_cache.json` z jednej daty), offline — brak kursu w zamrożonym cache to błąd testu, nie pobranie z sieci. Bez fixture się pomijają. Wyjątek: `tests/personal/test_download_coverage.py` czyta żywe `data/` i pilnuje, żeby świeże pobranie nie przyniosło symbolu bez metadanych ani typu operacji, który klasyfikator po cichu pomija.
+
+Odświeżenie fixture po nowym pobraniu to świadomy krok, nie skutek uboczny:
+
+```bash
+cp data/transactions.json data/symbols.json data/nbp_cache.json tests/personal/fixtures/frozen/
+pytest tests/personal   # czerwone = goldeny do przeliczenia
+```
+
+Goldeny i migawki w `tests/personal/` opisują stan fixture; po odświeżeniu przelicz je z pełnym opisem, co nowego w danych.
 
 ## Architektura
 

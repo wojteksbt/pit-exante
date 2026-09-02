@@ -38,16 +38,24 @@ logger = logging.getLogger(__name__)
 _SYNTHETIC_DIVIDEND_SYMBOLS = frozenset({"US_TAX_RECALC", "TAX_UNLINKED"})
 
 
-def _load_kind_lookup(transactions_path: Path) -> tuple[dict, dict]:
-    """Load symbols.json + symbol_overrides.json relative to the project root.
+def _load_kind_lookup(
+    transactions_path: Path,
+    symbols_path: Path | None = None,
+    overrides_path: Path | None = None,
+) -> tuple[dict, dict]:
+    """Load symbols.json + symbol_overrides.json.
 
+    Defaults resolve relative to the project root implied by transactions_path
+    (data/transactions.json → data/symbols.json, config/symbol_overrides.json).
     Falls back to empty dicts if files don't exist (test fixtures or stale data) —
     classify_event_kind handles missing entries by raising UnknownInstrumentError
     only for symbols that actually need classification.
     """
     project_root = Path(transactions_path).parent.parent
-    symbols_path = project_root / "data" / "symbols.json"
-    overrides_path = project_root / "config" / "symbol_overrides.json"
+    if symbols_path is None:
+        symbols_path = project_root / "data" / "symbols.json"
+    if overrides_path is None:
+        overrides_path = project_root / "config" / "symbol_overrides.json"
 
     symbols: dict = {}
     if symbols_path.exists():
@@ -545,11 +553,15 @@ def _match_tax_by_timestamp(
 
 def calculate(
     transactions_path: str | Path,
+    *,
+    symbols_path: Path | None = None,
+    overrides_path: Path | None = None,
 ) -> tuple[list[YearReport], dict]:
     """Process all transactions and generate yearly tax reports.
 
     Returns (reports, open_positions) where open_positions is the FIFO state
-    at the end of processing.
+    at the end of processing. symbols_path / overrides_path override the
+    project-root-relative defaults (see _load_kind_lookup).
     """
     transactions = parse_transactions(transactions_path)
     commission_map = _build_commission_map(transactions)
@@ -893,7 +905,7 @@ def calculate(
     save_cache_if_dirty()
 
     # KROK 3: classify each tax event by InstrumentKind (SECURITY / DERIVATIVE)
-    symbols, overrides = _load_kind_lookup(Path(transactions_path))
+    symbols, overrides = _load_kind_lookup(Path(transactions_path), symbols_path, overrides_path)
     for event in tax_events:
         event.kind = _classify_event_kind(event, symbols, overrides)
 

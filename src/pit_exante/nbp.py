@@ -35,6 +35,18 @@ _cache_dirty: bool = False
 _last_request_time: float = 0.0
 
 
+def use_cache(path: Path) -> None:
+    """Point the rate cache at another file (e.g. a frozen test fixture).
+
+    Resets in-memory state so the next lookup reads from the new file.
+    """
+    global _CACHE_PATH, _cache, _cache_loaded, _cache_dirty
+    _CACHE_PATH = Path(path)
+    _cache = {}
+    _cache_loaded = False
+    _cache_dirty = False
+
+
 def _load_cache() -> None:
     global _cache, _cache_loaded
     if _cache_loaded:
